@@ -1,4 +1,4 @@
-package top.publicnote.cowfarm.Controller;
+package io.github.jinganix.admin.starter.webrtc;
 
 import jakarta.websocket.OnClose;
 import jakarta.websocket.OnMessage;
