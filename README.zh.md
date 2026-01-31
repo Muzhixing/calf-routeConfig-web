@@ -83,6 +83,23 @@ docker-compose up --build
 ./gradlew.bat service:admin-starter:bootRun
 ```
 
+#### 仅信令模式（无需数据库）
+
+如果只需要 WebRTC 信令服务，可使用 `signal-only` profile 启动，
+此模式不会连接 MySQL/Redis，也不会执行 Flyway。
+
+```shell
+java -jar service/admin-starter/build/libs/admin-starter-service.jar \
+  --spring.profiles.active=signal-only \
+  --server.port=8081
+```
+
+WebSocket 信令地址：
+
+```
+ws://<host>:8081/ws
+```
+
 ### 前端
 
 你需要安装[node.js](https://nodejs.org/en)，对应的版本在[.tool-versions](.tool-versions)

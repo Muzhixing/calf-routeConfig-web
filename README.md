@@ -1,5 +1,15 @@
 # 后端启动命令
 `gradlew.bat service:admin-starter:bootRun`
+
+# 仅信令模式（无需数据库）
+```bash
+java -jar service/admin-starter/build/libs/admin-starter-service.jar \
+  --spring.profiles.active=signal-only \
+  --server.port=8081
+```
+
+WebSocket 信令地址：
+`ws://<host>:8081/ws`
 # 前端启动命令
 `npm start`
 
