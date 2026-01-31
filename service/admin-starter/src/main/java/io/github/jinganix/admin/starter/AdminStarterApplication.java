@@ -1,6 +1,8 @@
 package io.github.jinganix.admin.starter;
 
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -20,16 +22,20 @@ public class AdminStarterApplication {
    * @param args arguments
    */
   public static void main(String[] args) {
+    SpringApplication app = new SpringApplication(AdminStarterApplication.class);
     if (isSignalOnly(args)) {
-      System.setProperty(
+      Map<String, Object> defaults = new HashMap<>();
+      defaults.put(
           "spring.autoconfigure.exclude",
           "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration,"
               + "org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration,"
               + "org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration,"
               + "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,"
               + "org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration");
+      defaults.put("spring.data.jpa.repositories.enabled", "false");
+      app.setDefaultProperties(defaults);
     }
-    SpringApplication.run(AdminStarterApplication.class, args);
+    app.run(args);
   }
 
   private static boolean isSignalOnly(String[] args) {
