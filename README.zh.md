@@ -89,8 +89,8 @@ docker-compose up --build
 此模式不会连接 MySQL/Redis，也不会执行 Flyway。
 
 ```shell
-java -jar service/admin-starter/build/libs/admin-starter-service.jar \
-  --spring.profiles.active=signal-only \
+java -Dloader.main=io.github.jinganix.admin.starter.SignalOnlyApplication \
+  -jar service/admin-starter/build/libs/admin-starter-service.jar \
   --server.port=8081
 ```
 

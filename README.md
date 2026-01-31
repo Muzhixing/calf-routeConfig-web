@@ -3,8 +3,8 @@
 
 # 仅信令模式（无需数据库）
 ```bash
-java -jar service/admin-starter/build/libs/admin-starter-service.jar \
-  --spring.profiles.active=signal-only \
+java -Dloader.main=io.github.jinganix.admin.starter.SignalOnlyApplication \
+  -jar service/admin-starter/build/libs/admin-starter-service.jar \
   --server.port=8081
 ```
 
