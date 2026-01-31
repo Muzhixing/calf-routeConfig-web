@@ -24,14 +24,19 @@ public class AdminStarterApplication {
   public static void main(String[] args) {
     SpringApplication app = new SpringApplication(AdminStarterApplication.class);
     if (isSignalOnly(args)) {
-      Map<String, Object> defaults = new HashMap<>();
-      defaults.put(
-          "spring.autoconfigure.exclude",
+      String excludes =
           "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration,"
               + "org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration,"
               + "org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration,"
+              + "org.springframework.boot.autoconfigure.data.jpa.JpaRepositoriesAutoConfiguration,"
+              + "org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration,"
+              + "org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration,"
               + "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,"
-              + "org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration");
+              + "org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration";
+      System.setProperty("spring.autoconfigure.exclude", excludes);
+      System.setProperty("spring.data.jpa.repositories.enabled", "false");
+      Map<String, Object> defaults = new HashMap<>();
+      defaults.put("spring.autoconfigure.exclude", excludes);
       defaults.put("spring.data.jpa.repositories.enabled", "false");
       app.setDefaultProperties(defaults);
     }
