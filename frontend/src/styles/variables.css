@@ -1,0 +1,88 @@
+/* 
+ * 奶牛牧场智能管理系统 - 全局样式变量
+ * 基于 Element Plus 的主题定制
+ */
+
+/* ==================== 主题色 ==================== */
+:root {
+  /* 主色调 - 草原绿 */
+  --color-primary: #4CAF50;
+  --color-primary-light: #81C784;
+  --color-primary-lighter: #C8E6C9;
+  --color-primary-dark: #388E3C;
+  --color-primary-darker: #1B5E20;
+
+  /* 辅助色 */
+  --color-success: #66BB6A;
+  --color-warning: #FFA726;
+  --color-danger: #EF5350;
+  --color-info: #78909C;
+
+  /* 中性色 */
+  --color-white: #FFFFFF;
+  --color-black: #000000;
+  --color-bg: #F5F7FA;
+  --color-bg-dark: #E8EDF3;
+  --color-text-primary: #303133;
+  --color-text-regular: #606266;
+  --color-text-secondary: #909399;
+  --color-text-placeholder: #C0C4CC;
+
+  /* 边框色 */
+  --color-border-base: #DCDFE6;
+  --color-border-light: #E4E7ED;
+  --color-border-lighter: #EBEEF5;
+  --color-border-extra-light: #F2F6FC;
+
+  /* 状态色 */
+  --color-online: #4CAF50;
+  --color-offline: #9E9E9E;
+  --color-running: #2196F3;
+  --color-paused: #FF9800;
+  --color-charging: #9C27B0;
+  --color-error: #F44336;
+
+  /* ==================== 字体 ==================== */
+  --font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 
+    'Microsoft YaHei', '微软雅黑', Arial, sans-serif;
+  --font-size-base: 14px;
+  --font-size-small: 13px;
+  --font-size-large: 16px;
+  --font-size-extra-large: 18px;
+
+  /* ==================== 间距 ==================== */
+  --spacing-base: 8px;
+  --spacing-small: 4px;
+  --spacing-large: 16px;
+  --spacing-extra-large: 24px;
+
+  /* ==================== 圆角 ==================== */
+  --border-radius-base: 4px;
+  --border-radius-small: 2px;
+  --border-radius-large: 8px;
+
+  /* ==================== 阴影 ==================== */
+  --box-shadow-base: 0 2px 4px rgba(0, 0, 0, 0.12), 0 0 6px rgba(0, 0, 0, 0.04);
+  --box-shadow-light: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+  --box-shadow-dark: 0 4px 8px rgba(0, 0, 0, 0.15);
+
+  /* ==================== 过渡 ==================== */
+  --transition-base: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-fast: all 0.15s ease-out;
+}
+
+/* ==================== 深色主题 ==================== */
+[data-theme="dark"] {
+  --color-bg: #1A1A1A;
+  --color-bg-dark: #141414;
+  --color-text-primary: #E5E5E5;
+  --color-text-regular: #B0B0B0;
+  --color-text-secondary: #808080;
+  --color-text-placeholder: #606060;
+  --color-border-base: #404040;
+  --color-border-light: #363636;
+  --color-border-lighter: #2C2C2C;
+  --color-border-extra-light: #242424;
+  --color-white: #1A1A1A;
+  --color-black: #E5E5E5;
+}
