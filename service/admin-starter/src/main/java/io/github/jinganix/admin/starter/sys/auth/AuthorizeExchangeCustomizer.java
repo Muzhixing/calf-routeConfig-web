@@ -23,6 +23,7 @@ public class AuthorizeExchangeCustomizer
     permitAll(registry, AuthLoginRequest.WEBPB_META);
     permitAll(registry, AuthSignupRequest.WEBPB_META);
     permitAll(registry, AuthTokenRequest.WEBPB_META);
+    registry.requestMatchers("/api/**", "/ws/**").permitAll();
     registry.requestMatchers(AnyRequestMatcher.INSTANCE).authenticated();
   }
 

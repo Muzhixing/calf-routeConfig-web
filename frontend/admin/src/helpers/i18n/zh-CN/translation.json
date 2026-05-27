@@ -227,6 +227,10 @@
   "menu": {
     "": "菜单",
     "dashboard": "仪表盘",
+    "robot": {
+      "liveViewer": "视频识别",
+      "routePlanner": "路径规划"
+    },
     "system": {
       "": "系统",
       "audits": "审计",

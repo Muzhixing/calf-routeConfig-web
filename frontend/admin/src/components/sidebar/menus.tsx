@@ -5,8 +5,10 @@ import {
   LogsIcon,
   type LucideIcon,
   MonitorCogIcon,
+  RouteIcon,
   UserRoundCheckIcon,
   UsersIcon,
+  VideoIcon,
 } from "lucide-react";
 import { CondRouteDef } from "@/components/condition/cond.route.tsx";
 import { ROUTES } from "@/components/routes/routes.tsx";
@@ -47,6 +49,16 @@ const menus: MenuDef[] = [
     icon: LayoutDashboardIcon,
     title: "menu.dashboard",
     url: "/dashboard",
+  },
+  {
+    icon: RouteIcon,
+    title: "menu.robot.routePlanner",
+    url: "/route-planner",
+  },
+  {
+    icon: VideoIcon,
+    title: "menu.robot.liveViewer",
+    url: "/live-viewer",
   },
   {
     icon: MonitorCogIcon,

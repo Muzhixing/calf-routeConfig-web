@@ -227,6 +227,10 @@
   "menu": {
     "": "Menu",
     "dashboard": "Dashboard",
+    "robot": {
+      "liveViewer": "Live Viewer",
+      "routePlanner": "Route Planner"
+    },
     "system": {
       "": "System",
       "audits": "Audits",
