@@ -16,6 +16,8 @@ import {
     Trash2Icon,
     UploadIcon,
     WaypointsIcon,
+    ZoomInIcon,
+    ZoomOutIcon,
 } from "lucide-react";
 import {
     type ChangeEvent,
@@ -151,6 +153,10 @@ const DEFAULT_MAP: MapConfig = {
     roadGraph: { edges: [], nodes: [] },
     zones: [],
 };
+
+const MAX_ZOOM = 3;
+const MIN_ZOOM = 0.25;
+const ZOOM_STEP = 1.15;
 
 const MODE_OPTIONS: { icon: typeof MoveIcon; label: string; value: Mode }[] = [
     { icon: MoveIcon, label: "平移", value: "pan" },
@@ -402,6 +408,10 @@ function formatMl(current?: number, capacity?: number): string {
         return `${current || 0} ml`;
     }
     return `${current || 0}/${capacity} ml`;
+}
+
+function clampZoom(value: number): number {
+    return Number(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value)).toFixed(3));
 }
 
 function createTaskPayload(
@@ -899,8 +909,29 @@ export const RoutePlannerPage: FC = () => {
 
     function handleWheel(event: WheelEvent<HTMLDivElement>): void {
         event.preventDefault();
-        const nextZoom = Math.min(3, Math.max(0.25, zoom * (event.deltaY > 0 ? 0.9 : 1.1)));
-        setZoom(Number(nextZoom.toFixed(3)));
+        setOffset((current) => ({
+            x: current.x - event.deltaX,
+            y: current.y - event.deltaY,
+        }));
+    }
+
+    function zoomBy(factor: number): void {
+        const viewport = viewportRef.current;
+        const nextZoom = clampZoom(zoom * factor);
+        if (!viewport || nextZoom === zoom) {
+            setZoom(nextZoom);
+            return;
+        }
+        const rect = viewport.getBoundingClientRect();
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+        const imageX = (centerX - offset.x) / zoom;
+        const imageY = (centerY - offset.y) / zoom;
+        setZoom(nextZoom);
+        setOffset({
+            x: centerX - imageX * nextZoom,
+            y: centerY - imageY * nextZoom,
+        });
     }
 
     function updateCalibration(
@@ -1100,9 +1131,30 @@ export const RoutePlannerPage: FC = () => {
                         })}
                     </div>
 
-                    <div className="absolute right-4 top-4 z-20 rounded-md border border-white/10 bg-slate-900/90 px-3 py-2 text-sm text-slate-300">
-                        缩放 {(zoom * 100).toFixed(0)}% · 犊牛岛 {mapConfig.islands.length} · 通道{" "}
-                        {mapConfig.roadGraph.edges.length}
+                    <div className="absolute right-4 top-4 z-20 flex items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 text-sm text-slate-300">
+                        <button
+                            className="grid h-8 w-8 place-items-center rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
+                            disabled={zoom <= MIN_ZOOM}
+                            title="缩小地图"
+                            type="button"
+                            onClick={() => zoomBy(1 / ZOOM_STEP)}
+                        >
+                            <ZoomOutIcon className="h-4 w-4" />
+                        </button>
+                        <span className="min-w-16 text-center">{(zoom * 100).toFixed(0)}%</span>
+                        <button
+                            className="grid h-8 w-8 place-items-center rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
+                            disabled={zoom >= MAX_ZOOM}
+                            title="放大地图"
+                            type="button"
+                            onClick={() => zoomBy(ZOOM_STEP)}
+                        >
+                            <ZoomInIcon className="h-4 w-4" />
+                        </button>
+                        <span className="border-l border-white/10 pl-2">
+                            犊牛岛 {mapConfig.islands.length} · 通道{" "}
+                            {mapConfig.roadGraph.edges.length}
+                        </span>
                     </div>
 
                     <div
