@@ -84,6 +84,12 @@ public class RobotIntegrationStore {
     normalized.put("taskID", taskId);
     normalized.put("deviceID", deviceId);
     normalized.put("gridScaleM", gridScaleM);
+    if (task.get("mapID") != null) {
+      normalized.put("mapID", task.get("mapID"));
+    }
+    if (task.get("targetIslandIDs") instanceof List<?> targetIslandIds) {
+      normalized.put("targetIslandIDs", targetIslandIds);
+    }
     normalized.put("robotPath", robotPath);
     normalized.put("taskState", "pending");
     normalized.put("updatedAt", Instant.now().toString());
