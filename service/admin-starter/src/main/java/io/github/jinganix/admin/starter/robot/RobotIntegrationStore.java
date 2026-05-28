@@ -87,6 +87,15 @@ public class RobotIntegrationStore {
     if (task.get("mapID") != null) {
       normalized.put("mapID", task.get("mapID"));
     }
+    if (task.get("planID") != null) {
+      normalized.put("planID", task.get("planID"));
+    }
+    if (task.get("taskName") != null) {
+      normalized.put("taskName", task.get("taskName"));
+    }
+    if (task.get("feedAmount") != null) {
+      normalized.put("feedAmount", task.get("feedAmount"));
+    }
     if (task.get("targetIslandIDs") instanceof List<?> targetIslandIds) {
       normalized.put("targetIslandIDs", targetIslandIds);
     }

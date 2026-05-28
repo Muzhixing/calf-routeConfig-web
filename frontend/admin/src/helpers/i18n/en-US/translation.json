@@ -228,6 +228,7 @@
     "": "Menu",
     "dashboard": "Dashboard",
     "robot": {
+      "feedingTasks": "Feeding Tasks",
       "liveViewer": "Live Viewer",
       "routePlanner": "Route Planner"
     },

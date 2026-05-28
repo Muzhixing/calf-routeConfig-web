@@ -1,5 +1,6 @@
 import { Cond } from "@helpers/condition/cond.types.ts";
 import {
+  ClipboardListIcon,
   LayoutDashboardIcon,
   LockIcon,
   LogsIcon,
@@ -54,6 +55,11 @@ const menus: MenuDef[] = [
     icon: RouteIcon,
     title: "menu.robot.routePlanner",
     url: "/route-planner",
+  },
+  {
+    icon: ClipboardListIcon,
+    title: "menu.robot.feedingTasks",
+    url: "/feeding-tasks",
   },
   {
     icon: VideoIcon,
