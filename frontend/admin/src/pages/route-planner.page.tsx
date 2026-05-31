@@ -60,7 +60,7 @@ import {
     unwrapData,
 } from "@/pages/robot-map.shared.ts";
 
-type Mode = "calibrate" | "island" | "pan" | "road" | "select" | "service" | "zone";
+type Mode = "autoGrid" | "calibrate" | "island" | "pan" | "road" | "select" | "service" | "zone";
 
 type DragState =
     | {
@@ -98,9 +98,27 @@ type FeedbackPoint = PixelPoint & {
     label: string;
 };
 
+type AutoGridPick = "down" | "origin" | "right" | null;
+
+type AutoGridAnchors = {
+    down?: RealPoint;
+    origin?: RealPoint;
+    right?: RealPoint;
+};
+
 const MAX_ZOOM = 3;
 const MIN_ZOOM = 0.25;
 const ZOOM_STEP = 1.15;
+
+const MODE_OPTIONS: { icon: typeof MoveIcon; label: string; value: Mode }[] = [
+    { icon: MoveIcon, label: "平移", value: "pan" },
+    { icon: CrosshairIcon, label: "标定", value: "calibrate" },
+    { icon: MapIcon, label: "区域", value: "zone" },
+    { icon: TargetIcon, label: "犊牛岛", value: "island" },
+    { icon: MousePointer2Icon, label: "服务点", value: "service" },
+    { icon: WaypointsIcon, label: "通道", value: "road" },
+    { icon: BoxSelectIcon, label: "框选", value: "select" },
+];
 
 const STEPS: { description: string; title: string; value: WizardStep }[] = [
     {
@@ -165,18 +183,75 @@ function sameStringSet(items: Set<string>, values: string[]): boolean {
     return values.every((value) => items.has(value));
 }
 
+function compareIslandID(left: string, right: string): number {
+    const leftZone = left.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || "";
+    const rightZone = right.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || "";
+    if (leftZone !== rightZone) {
+        return leftZone.localeCompare(rightZone);
+    }
+    return idNumber(left) - idNumber(right);
+}
+
+function pointInPolygon(point: RealPoint, polygon: RealPoint[]): boolean {
+    if (polygon.length < 3) {
+        return false;
+    }
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const a = polygon[i];
+        const b = polygon[j];
+        const intersects =
+            a.y > point.y !== b.y > point.y &&
+            point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y || 0.000001) + a.x;
+        if (intersects) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+function isModeAllowedForStep(mode: Mode, step: WizardStep): boolean {
+    if (mode === "pan") {
+        return true;
+    }
+    if (mode === "select") {
+        return step !== "upload";
+    }
+    if (step === "calibration") {
+        return mode === "calibrate";
+    }
+    if (step === "islands") {
+        return mode === "autoGrid" || mode === "island" || mode === "service" || mode === "zone";
+    }
+    if (step === "roads") {
+        return mode === "road";
+    }
+    return false;
+}
+
 function stepHelp(step: WizardStep): string[] {
     if (step === "upload") {
         return ["左侧列表管理历史平面图。", "点击新建后上传图片，图片和草稿会自动保存。"];
     }
     if (step === "calibration") {
-        return ["点击 P1/P2 后在图上选择对应点。", "两个点距离越远比例尺越稳定，右键标记点或框选后可删除。"];
+        return [
+            "点击 P1/P2 后在图上选择对应点。",
+            "两个点距离越远比例尺越稳定，右键标记点或框选后可删除。",
+        ];
     }
     if (step === "islands") {
-        return ["区域模式逐点画 A-F 区域，点击完成区域保存。", "犊牛岛模式标中心点，服务点模式标车辆投喂停靠点。"];
+        return [
+            "区域模式逐点画 A-F 区域，点击完成区域保存。",
+            "区域完成后可直接进入犊牛岛中心点或服务点标定。",
+            "批量生成工具用左上、右邻、可选下邻样点自动生成区域内中心点。",
+        ];
     }
     if (step === "roads") {
-        return ["通道模式沿道路中心逐点点击，系统按顺序连线。", "点击断开连线后可从另一段通道重新开始，右键节点或边可删除。"];
+        return [
+            "通道模式沿道路中心逐点点击，系统按顺序连线。",
+            "平移后点击继续标定通道路线即可恢复通道标点。",
+            "点击断开连线后可从另一段通道重新开始，右键节点或边可删除。",
+        ];
     }
     return [
         "可下发路径是投喂任务页能够直接发送给板卡的 robotPath。",
@@ -224,6 +299,12 @@ export const RoutePlannerPage: FC = () => {
     const [history, setHistory] = useState<EditSnapshot[]>([]);
     const [feedbackPoint, setFeedbackPoint] = useState<FeedbackPoint | null>(null);
     const [showHelp, setShowHelp] = useState(true);
+    const [autoGridAnchors, setAutoGridAnchors] = useState<AutoGridAnchors>({});
+    const [autoGridPick, setAutoGridPick] = useState<AutoGridPick>(null);
+    const [autoGridZoneID, setAutoGridZoneID] = useState("A");
+    const [autoGridStartID, setAutoGridStartID] = useState("A1");
+    const [autoGridMaxCols, setAutoGridMaxCols] = useState(80);
+    const [autoGridMaxRows, setAutoGridMaxRows] = useState(12);
 
     const activeCalibration = useMemo(
         () => (hasCalibration(mapConfig.calibration) ? mapConfig.calibration : null),
@@ -233,10 +314,14 @@ export const RoutePlannerPage: FC = () => {
         () => mapConfig.islands.filter((island) => targetIslandIDs.has(island.id)),
         [mapConfig.islands, targetIslandIDs],
     );
+    const sortedIslands = useMemo(
+        () => [...mapConfig.islands].sort((a, b) => compareIslandID(a.id, b.id)),
+        [mapConfig.islands],
+    );
     const imageSrc = mapImageSrc(mapConfig, apiBase, imageVersion);
     const isPathReady = Boolean(
         currentPlan?.robotPath.length &&
-            sameStringSet(targetIslandIDs, currentPlan.targetIslandIDs || []),
+        sameStringSet(targetIslandIDs, currentPlan.targetIslandIDs || []),
     );
     const previewPath = isPathReady ? currentPlan?.robotPath || [] : [];
 
@@ -331,6 +416,12 @@ export const RoutePlannerPage: FC = () => {
             setMode("pan");
         }
     }, [step]);
+
+    useEffect(() => {
+        if (mode === "service" && sortedIslands.length > 0 && !activeIslandID) {
+            setActiveIslandID(sortedIslands[0].id);
+        }
+    }, [activeIslandID, mode, sortedIslands]);
 
     useEffect(() => {
         if (!mapConfig.mapID) {
@@ -429,24 +520,40 @@ export const RoutePlannerPage: FC = () => {
     }
 
     function pushHistory(): void {
-        setHistory((items) =>
-            [
-                ...items.slice(-29),
-                {
-                    currentPlan: currentPlan ? cloneJson(currentPlan) : null,
-                    mapConfig: cloneJson(mapConfig),
-                    targetIslandIDs: [...targetIslandIDs],
-                    zoneDraft: cloneJson(zoneDraft),
-                },
-            ],
+        setHistory((items) => [
+            ...items.slice(-29),
+            {
+                currentPlan: currentPlan ? cloneJson(currentPlan) : null,
+                mapConfig: cloneJson(mapConfig),
+                targetIslandIDs: [...targetIslandIDs],
+                zoneDraft: cloneJson(zoneDraft),
+            },
+        ]);
+    }
+
+    function clearGeneratedPath(): void {
+        setCurrentPlan((plan) =>
+            plan?.robotPath.length
+                ? {
+                      ...plan,
+                      robotPath: [],
+                  }
+                : plan,
         );
     }
 
-    function updateMap(mutator: (current: MapConfig) => MapConfig, recordHistory = true): void {
+    function updateMap(
+        mutator: (current: MapConfig) => MapConfig,
+        recordHistory = true,
+        invalidatePath = false,
+    ): void {
         if (recordHistory) {
             pushHistory();
         }
         setMapConfig((current) => mutator(normalizeMap(current)));
+        if (invalidatePath) {
+            clearGeneratedPath();
+        }
     }
 
     function updatePlan(mutator: (current: RoutePlan) => RoutePlan, recordHistory = true): void {
@@ -554,13 +661,18 @@ export const RoutePlannerPage: FC = () => {
         pushHistory();
         if (step === "calibration") {
             setMapConfig((current) => ({ ...current, calibration: null }));
+            clearGeneratedPath();
         } else if (step === "islands") {
             setMapConfig((current) => ({ ...current, islands: [], zones: [] }));
             setZoneDraft([]);
             setActiveIslandID("");
+            setAutoGridAnchors({});
+            setAutoGridPick(null);
+            clearGeneratedPath();
         } else if (step === "roads") {
             setMapConfig((current) => ({ ...current, roadGraph: { edges: [], nodes: [] } }));
             roadCursorRef.current = null;
+            clearGeneratedPath();
         } else if (step === "save") {
             applyTargetSelection(new Set());
         }
@@ -593,6 +705,8 @@ export const RoutePlannerPage: FC = () => {
         setStep("upload");
         setTargetIslandIDs(new Set());
         setZoneDraft([]);
+        setAutoGridAnchors({});
+        setAutoGridPick(null);
         setSelectedMarkers(new Set());
         setMessage("全部标注已清空");
     }
@@ -660,6 +774,7 @@ export const RoutePlannerPage: FC = () => {
         }
         const next = normalizeMap(unwrapData<Partial<MapConfig>>(await response.json()));
         setMapConfig({ ...next, currentStep: "calibration" });
+        clearGeneratedPath();
         setStep("calibration");
         setImageVersion(Date.now());
         setMessage("平面图已上传，请进行两点标定");
@@ -678,23 +793,54 @@ export const RoutePlannerPage: FC = () => {
     }
 
     function setStepAndSave(value: WizardStep): void {
+        roadCursorRef.current = null;
+        setSelectedMarkers(new Set());
+        setAutoGridPick(null);
         setStep(value);
         updateMap((current) => ({ ...current, currentStep: value }));
     }
 
+    function chooseMode(nextMode: Mode): void {
+        if (!isModeAllowedForStep(nextMode, step)) {
+            setMessage("该工具只能在对应步骤中使用，请先切换到正确步骤");
+            return;
+        }
+        if (
+            step === "islands" &&
+            zoneDraft.length > 0 &&
+            nextMode !== "zone" &&
+            nextMode !== "pan" &&
+            nextMode !== "select"
+        ) {
+            setMessage("当前区域还未完成，请先点击完成区域或框选删除草稿点");
+            return;
+        }
+        if (nextMode !== "road") {
+            roadCursorRef.current = null;
+        }
+        if (nextMode !== "autoGrid") {
+            setAutoGridPick(null);
+        }
+        setMode(nextMode);
+    }
+
     function setCalibrationPoint(which: "p1" | "p2", point: PixelPoint): void {
         const current = mapConfig.calibration || EMPTY_CALIBRATION;
-        updateMap((data) => ({
-            ...data,
-            calibration: {
-                ...current,
-                [which]: {
-                    ...current[which],
-                    px: Number(point.px.toFixed(1)),
-                    py: Number(point.py.toFixed(1)),
+        updateMap(
+            (data) => ({
+                ...data,
+                calibration: {
+                    ...current,
+                    [which]: {
+                        ...current[which],
+                        px: Number(point.px.toFixed(1)),
+                        py: Number(point.py.toFixed(1)),
+                    },
                 },
-            },
-        }));
+            }),
+            true,
+            true,
+        );
         setCalibrationClick(which === "p1" ? "p2" : "p1");
     }
 
@@ -704,24 +850,33 @@ export const RoutePlannerPage: FC = () => {
         value: number,
     ): void {
         const current = mapConfig.calibration || EMPTY_CALIBRATION;
-        updateMap((data) => ({
-            ...data,
-            calibration: {
-                ...current,
-                [which]: { ...current[which], [key]: value },
-            },
-        }));
+        updateMap(
+            (data) => ({
+                ...data,
+                calibration: {
+                    ...current,
+                    [which]: { ...current[which], [key]: value },
+                },
+            }),
+            true,
+            true,
+        );
     }
 
     function handleMapClick(point: PixelPoint): void {
         const real = pixelToReal(point, activeCalibration);
-        if (step === "calibration" || mode === "calibrate") {
+        if (step === "calibration" && mode === "calibrate") {
             showClickFeedback(point, calibrationClick.toUpperCase());
             setCalibrationPoint(calibrationClick, point);
             return;
         }
+        if (step === "islands" && mode === "autoGrid") {
+            setAutoGridAnchor(point, real);
+            return;
+        }
         if (step === "islands" && mode === "zone") {
             pushHistory();
+            clearGeneratedPath();
             showClickFeedback(point, `区域点 ${zoneDraft.length + 1}`);
             setZoneDraft((items) => [...items, real]);
             return;
@@ -737,13 +892,17 @@ export const RoutePlannerPage: FC = () => {
                 servicePoint: real,
                 zoneID: islandZoneID.trim().toUpperCase() || "A",
             };
-            updateMap((current) => ({
-                ...current,
-                islands: [
-                    ...current.islands.filter((item) => item.id !== nextIsland.id),
-                    nextIsland,
-                ],
-            }));
+            updateMap(
+                (current) => ({
+                    ...current,
+                    islands: [
+                        ...current.islands.filter((item) => item.id !== nextIsland.id),
+                        nextIsland,
+                    ],
+                }),
+                true,
+                true,
+            );
             showClickFeedback(point, nextIsland.id);
             setActiveIslandID(nextIsland.id);
             setIslandID(nextIslandID(nextIsland.id));
@@ -751,21 +910,160 @@ export const RoutePlannerPage: FC = () => {
             return;
         }
         if (step === "islands" && mode === "service") {
-            const targetID = activeIslandID || mapConfig.islands[0]?.id;
-            updateMap((current) => ({
-                ...current,
-                islands: current.islands.map((island) =>
-                    island.id === targetID ? { ...island, servicePoint: real } : island,
-                ),
-            }));
-            showClickFeedback(point, "服务点");
-            setMessage(targetID ? `${targetID} 服务点已更新` : "请先选择犊牛岛");
+            const targetID = activeIslandID || sortedIslands[0]?.id;
+            if (!targetID) {
+                setMessage("请先标注犊牛岛中心点");
+                return;
+            }
+            updateMap(
+                (current) => ({
+                    ...current,
+                    islands: current.islands.map((island) =>
+                        island.id === targetID ? { ...island, servicePoint: real } : island,
+                    ),
+                }),
+                true,
+                true,
+            );
+            const currentIndex = sortedIslands.findIndex((island) => island.id === targetID);
+            const nextIsland = sortedIslands[currentIndex + 1] || null;
+            showClickFeedback(point, `${targetID}服务点`);
+            setActiveIslandID(nextIsland?.id || targetID);
+            setMessage(
+                nextIsland
+                    ? `${targetID} 服务点已更新，下一点：${nextIsland.id}`
+                    : `${targetID} 服务点已更新，已到最后一个犊牛岛`,
+            );
             return;
         }
         if (step === "roads" && mode === "road") {
             showClickFeedback(point, "通道点");
             addRoadPoint(real);
         }
+    }
+
+    function setAutoGridAnchor(point: PixelPoint, real: RealPoint): void {
+        if (!autoGridPick) {
+            setMessage("请先在右侧批量生成工具中选择要标定的样点");
+            return;
+        }
+        setAutoGridAnchors((current) => ({ ...current, [autoGridPick]: real }));
+        showClickFeedback(
+            point,
+            autoGridPick === "origin"
+                ? "左上起点"
+                : autoGridPick === "right"
+                  ? "右侧相邻点"
+                  : "下方相邻点",
+        );
+        setAutoGridPick(
+            autoGridPick === "origin" ? "right" : autoGridPick === "right" ? "down" : null,
+        );
+        setMessage(
+            autoGridPick === "origin"
+                ? "已标左上起点，请标右侧相邻犊牛岛中心点"
+                : autoGridPick === "right"
+                  ? "已标横向间距，可继续标下方相邻点或直接生成"
+                  : "已标纵向间距，可以生成本区域犊牛岛中心点",
+        );
+    }
+
+    function generateAutoGridIslands(): void {
+        const zone = mapConfig.zones.find((item) => item.id === autoGridZoneID);
+        const origin = autoGridAnchors.origin;
+        const right = autoGridAnchors.right;
+        if (!zone || !origin || !right) {
+            setMessage("请先选择区域，并标左上起点和右侧相邻中心点");
+            return;
+        }
+        const horizontal = { x: right.x - origin.x, y: right.y - origin.y };
+        const horizontalLength = distance(origin, right);
+        if (horizontalLength < 0.05) {
+            setMessage("两个样点距离太近，无法计算间距");
+            return;
+        }
+        const down = autoGridAnchors.down || {
+            x: origin.x,
+            y: origin.y + horizontalLength,
+        };
+        const vertical = { x: down.x - origin.x, y: down.y - origin.y };
+        if (Math.hypot(vertical.x, vertical.y) < 0.05) {
+            setMessage("纵向间距太小，无法生成");
+            return;
+        }
+        const prefix = autoGridStartID.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || autoGridZoneID;
+        const startNumber = idNumber(autoGridStartID);
+        let nextNumber = Number.isFinite(startNumber) ? startNumber : 1;
+        const created = [];
+        for (let row = 0; row < autoGridMaxRows; row += 1) {
+            let rowHasIsland = false;
+            for (let col = 0; col < autoGridMaxCols; col += 1) {
+                const candidate = {
+                    x: roundMeter(origin.x + horizontal.x * col + vertical.x * row),
+                    y: roundMeter(origin.y + horizontal.y * col + vertical.y * row),
+                };
+                if (!pointInPolygon(candidate, zone.polygon)) {
+                    if (rowHasIsland) {
+                        break;
+                    }
+                    if (col === 0 && row > 0) {
+                        return applyGeneratedAutoGrid(created, prefix);
+                    }
+                    continue;
+                }
+                rowHasIsland = true;
+                created.push({
+                    center: candidate,
+                    id: `${prefix}${nextNumber}`,
+                    servicePoint: candidate,
+                    zoneID: zone.id,
+                });
+                nextNumber += 1;
+            }
+            if (!rowHasIsland && row > 0) {
+                break;
+            }
+        }
+        applyGeneratedAutoGrid(created, prefix);
+    }
+
+    function applyGeneratedAutoGrid(
+        created: { center: RealPoint; id: string; servicePoint: RealPoint; zoneID: string }[],
+        prefix: string,
+    ): void {
+        if (created.length === 0) {
+            setMessage("没有生成犊牛岛，请检查样点是否在区域内部");
+            return;
+        }
+        if (
+            !window.confirm(
+                `将覆盖 ${autoGridZoneID} 区已有 ${prefix} 编号犊牛岛，并生成 ${created.length} 个中心点？`,
+            )
+        ) {
+            return;
+        }
+        updateMap(
+            (current) => {
+                const generatedIds = new Set(created.map((island) => island.id));
+                return {
+                    ...current,
+                    islands: [
+                        ...current.islands.filter(
+                            (island) =>
+                                island.zoneID !== autoGridZoneID && !generatedIds.has(island.id),
+                        ),
+                        ...created,
+                    ],
+                };
+            },
+            true,
+            true,
+        );
+        setIslandZoneID(autoGridZoneID);
+        setIslandID(nextIslandID(created[created.length - 1].id));
+        setActiveIslandID(created[0].id);
+        setMode("service");
+        setMessage(`已自动生成 ${created.length} 个犊牛岛中心点，请开始依次标服务点`);
     }
 
     function addRoadPoint(point: RealPoint): void {
@@ -789,28 +1087,32 @@ export const RoutePlannerPage: FC = () => {
                   };
         const previousID = roadCursorRef.current;
         roadCursorRef.current = node.id;
-        updateMap((current) => {
-            const nodes = reuse ? current.roadGraph.nodes : [...current.roadGraph.nodes, node];
-            const edgeExists = current.roadGraph.edges.some(
-                (edge) =>
-                    previousID &&
-                    ((edge.from === previousID && edge.to === node.id) ||
-                        (edge.from === node.id && edge.to === previousID)),
-            );
-            const edges =
-                previousID && previousID !== node.id && !edgeExists
-                    ? [
-                          ...current.roadGraph.edges,
-                          {
-                              from: previousID,
-                              id: `e${Date.now()}`,
-                              to: node.id,
-                              type: roadEdgeType,
-                          },
-                      ]
-                    : current.roadGraph.edges;
-            return { ...current, roadGraph: { edges, nodes } };
-        });
+        updateMap(
+            (current) => {
+                const nodes = reuse ? current.roadGraph.nodes : [...current.roadGraph.nodes, node];
+                const edgeExists = current.roadGraph.edges.some(
+                    (edge) =>
+                        previousID &&
+                        ((edge.from === previousID && edge.to === node.id) ||
+                            (edge.from === node.id && edge.to === previousID)),
+                );
+                const edges =
+                    previousID && previousID !== node.id && !edgeExists
+                        ? [
+                              ...current.roadGraph.edges,
+                              {
+                                  from: previousID,
+                                  id: `e${Date.now()}`,
+                                  to: node.id,
+                                  type: roadEdgeType,
+                              },
+                          ]
+                        : current.roadGraph.edges;
+                return { ...current, roadGraph: { edges, nodes } };
+            },
+            true,
+            true,
+        );
     }
 
     function handleMouseDown(event: MouseEvent<HTMLDivElement>): void {
@@ -888,9 +1190,14 @@ export const RoutePlannerPage: FC = () => {
             setSelectionRect(null);
             return;
         }
-        if (!drag.moved || mode !== "pan") {
+        if (!drag.moved && mode !== "pan") {
             handleMapClick(point);
         }
+    }
+
+    function handleMouseLeave(): void {
+        dragRef.current = null;
+        setSelectionRect(null);
     }
 
     function handleContextMenu(event: MouseEvent<HTMLDivElement>): void {
@@ -1016,13 +1323,19 @@ export const RoutePlannerPage: FC = () => {
                 return !best || value < best.value ? { id: edge.id, value } : best;
             }, null);
             if (nearestEdge && nearestEdge.value < 1.5) {
-                updateMap((current) => ({
-                    ...current,
-                    roadGraph: {
-                        ...current.roadGraph,
-                        edges: current.roadGraph.edges.filter((edge) => edge.id !== nearestEdge.id),
-                    },
-                }));
+                updateMap(
+                    (current) => ({
+                        ...current,
+                        roadGraph: {
+                            ...current.roadGraph,
+                            edges: current.roadGraph.edges.filter(
+                                (edge) => edge.id !== nearestEdge.id,
+                            ),
+                        },
+                    }),
+                    true,
+                    true,
+                );
             }
         }
     }
@@ -1031,36 +1344,40 @@ export const RoutePlannerPage: FC = () => {
         if (markers.size === 0) {
             return;
         }
-        updateMap((current) => {
-            let calibration = current.calibration;
-            if (calibration && markers.has("cal:p1")) {
-                calibration = { ...calibration, p1: EMPTY_CALIBRATION.p1 };
-            }
-            if (calibration && markers.has("cal:p2")) {
-                calibration = { ...calibration, p2: EMPTY_CALIBRATION.p2 };
-            }
-            const islandIds = new Set(
-                [...markers].filter((id) => id.startsWith("island:")).map((id) => id.slice(7)),
-            );
-            const zoneIds = new Set(
-                [...markers].filter((id) => id.startsWith("zone:")).map((id) => id.slice(5)),
-            );
-            const nodeIds = new Set(
-                [...markers].filter((id) => id.startsWith("node:")).map((id) => id.slice(5)),
-            );
-            return {
-                ...current,
-                calibration,
-                islands: current.islands.filter((island) => !islandIds.has(island.id)),
-                roadGraph: {
-                    edges: current.roadGraph.edges.filter(
-                        (edge) => !nodeIds.has(edge.from) && !nodeIds.has(edge.to),
-                    ),
-                    nodes: current.roadGraph.nodes.filter((node) => !nodeIds.has(node.id)),
-                },
-                zones: current.zones.filter((zone) => !zoneIds.has(zone.id)),
-            };
-        });
+        updateMap(
+            (current) => {
+                let calibration = current.calibration;
+                if (calibration && markers.has("cal:p1")) {
+                    calibration = { ...calibration, p1: EMPTY_CALIBRATION.p1 };
+                }
+                if (calibration && markers.has("cal:p2")) {
+                    calibration = { ...calibration, p2: EMPTY_CALIBRATION.p2 };
+                }
+                const islandIds = new Set(
+                    [...markers].filter((id) => id.startsWith("island:")).map((id) => id.slice(7)),
+                );
+                const zoneIds = new Set(
+                    [...markers].filter((id) => id.startsWith("zone:")).map((id) => id.slice(5)),
+                );
+                const nodeIds = new Set(
+                    [...markers].filter((id) => id.startsWith("node:")).map((id) => id.slice(5)),
+                );
+                return {
+                    ...current,
+                    calibration,
+                    islands: current.islands.filter((island) => !islandIds.has(island.id)),
+                    roadGraph: {
+                        edges: current.roadGraph.edges.filter(
+                            (edge) => !nodeIds.has(edge.from) && !nodeIds.has(edge.to),
+                        ),
+                        nodes: current.roadGraph.nodes.filter((node) => !nodeIds.has(node.id)),
+                    },
+                    zones: current.zones.filter((zone) => !zoneIds.has(zone.id)),
+                };
+            },
+            true,
+            true,
+        );
         setSelectedMarkers(new Set());
     }
 
@@ -1070,15 +1387,22 @@ export const RoutePlannerPage: FC = () => {
             return;
         }
         const id = zoneID.trim().toUpperCase() || "A";
-        updateMap((current) => ({
-            ...current,
-            zones: [
-                ...current.zones.filter((zone) => zone.id !== id),
-                { id, name: `${id}区`, polygon: zoneDraft },
-            ],
-        }));
+        updateMap(
+            (current) => ({
+                ...current,
+                zones: [
+                    ...current.zones.filter((zone) => zone.id !== id),
+                    { id, name: `${id}区`, polygon: zoneDraft },
+                ],
+            }),
+            true,
+            true,
+        );
         setZoneDraft([]);
         setZoneID(String.fromCharCode(id.charCodeAt(0) + 1));
+        setAutoGridZoneID(id);
+        setAutoGridStartID(`${id}1`);
+        setMessage(`${id}区已完成，可继续标下一区域或开始标犊牛岛中心点`);
     }
 
     function selectZone(zoneIDValue: string): void {
@@ -1157,7 +1481,9 @@ export const RoutePlannerPage: FC = () => {
                     <button
                         className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
                         type="button"
-                        onClick={() => void createNewMap().catch((error) => setMessage(String(error)))}
+                        onClick={() =>
+                            void createNewMap().catch((error) => setMessage(String(error)))
+                        }
                     >
                         <PlusIcon className="h-4 w-4" />
                         新增平面图
@@ -1172,7 +1498,11 @@ export const RoutePlannerPage: FC = () => {
                                         : "border-white/10 bg-slate-900 text-slate-300 hover:bg-slate-800"
                                 }`}
                                 type="button"
-                                onClick={() => void loadMap(item.mapID).catch((error) => setMessage(String(error)))}
+                                onClick={() =>
+                                    void loadMap(item.mapID).catch((error) =>
+                                        setMessage(String(error)),
+                                    )
+                                }
                             >
                                 <span className="block font-medium">{item.name || item.mapID}</span>
                                 <span className="mt-1 block text-xs opacity-75">
@@ -1186,7 +1516,11 @@ export const RoutePlannerPage: FC = () => {
                             className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
                             disabled={!mapConfig.mapID}
                             type="button"
-                            onClick={() => void saveMapNow(mapConfig).catch((error) => setMessage(String(error)))}
+                            onClick={() =>
+                                void saveMapNow(mapConfig).catch((error) =>
+                                    setMessage(String(error)),
+                                )
+                            }
                         >
                             <SaveIcon className="h-4 w-4" />
                             保存当前平面图
@@ -1195,7 +1529,9 @@ export const RoutePlannerPage: FC = () => {
                             className="inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400 disabled:opacity-40"
                             disabled={!mapConfig.mapID}
                             type="button"
-                            onClick={() => void deleteCurrentMap().catch((error) => setMessage(String(error)))}
+                            onClick={() =>
+                                void deleteCurrentMap().catch((error) => setMessage(String(error)))
+                            }
                         >
                             <Trash2Icon className="h-4 w-4" />
                             删除当前平面图
@@ -1207,7 +1543,7 @@ export const RoutePlannerPage: FC = () => {
                     className="relative min-h-[620px] overflow-hidden border-r border-white/10 bg-slate-950"
                     onContextMenu={handleContextMenu}
                     onMouseDown={handleMouseDown}
-                    onMouseLeave={handleMouseUp}
+                    onMouseLeave={handleMouseLeave}
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
                     onWheel={handleWheel}
@@ -1218,27 +1554,21 @@ export const RoutePlannerPage: FC = () => {
                         onMouseDown={(event) => event.stopPropagation()}
                         onMouseUp={(event) => event.stopPropagation()}
                     >
-                        {[
-                            { icon: MoveIcon, label: "平移", value: "pan" },
-                            { icon: CrosshairIcon, label: "标定", value: "calibrate" },
-                            { icon: MapIcon, label: "区域", value: "zone" },
-                            { icon: TargetIcon, label: "犊牛岛", value: "island" },
-                            { icon: MousePointer2Icon, label: "服务点", value: "service" },
-                            { icon: WaypointsIcon, label: "通道", value: "road" },
-                            { icon: BoxSelectIcon, label: "框选", value: "select" },
-                        ].map((item) => {
+                        {MODE_OPTIONS.map((item) => {
                             const Icon = item.icon;
+                            const disabled = !isModeAllowedForStep(item.value, step);
                             return (
                                 <button
                                     key={item.value}
-                                    className={`inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm ${
+                                    className={`inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm disabled:cursor-not-allowed disabled:opacity-35 ${
                                         mode === item.value
                                             ? "bg-cyan-400 text-slate-950"
                                             : "bg-slate-800 text-slate-200 hover:bg-slate-700"
                                     }`}
+                                    disabled={disabled}
                                     title={item.label}
                                     type="button"
-                                    onClick={() => setMode(item.value as Mode)}
+                                    onClick={() => chooseMode(item.value)}
                                 >
                                     <Icon className="h-4 w-4" />
                                     {item.label}
@@ -1308,6 +1638,20 @@ export const RoutePlannerPage: FC = () => {
                             width={imageSize.width}
                             xmlns="http://www.w3.org/2000/svg"
                         >
+                            <defs>
+                                <marker
+                                    id="route-direction-arrow"
+                                    markerHeight="8"
+                                    markerUnits="strokeWidth"
+                                    markerWidth="8"
+                                    orient="auto"
+                                    refX="7"
+                                    refY="4"
+                                    viewBox="0 0 8 8"
+                                >
+                                    <path d="M 0 0 L 8 4 L 0 8 z" fill="#f97316" />
+                                </marker>
+                            </defs>
                             {mapConfig.zones.map((zone) => {
                                 const points = zone.polygon.map((point) =>
                                     realToPixel(point, activeCalibration),
@@ -1329,9 +1673,12 @@ export const RoutePlannerPage: FC = () => {
                                         />
                                         {points[0] && (
                                             <text
-                                                fill="#e0f2fe"
+                                                fill="#0f172a"
                                                 fontSize={18 / zoom}
                                                 fontWeight={700}
+                                                paintOrder="stroke"
+                                                stroke="#ffffff"
+                                                strokeWidth={4 / zoom}
                                                 x={points[0].px + 8 / zoom}
                                                 y={points[0].py + 20 / zoom}
                                             >
@@ -1356,15 +1703,28 @@ export const RoutePlannerPage: FC = () => {
                                     {zoneDraft.map((point, index) => {
                                         const pixel = realToPixel(point, activeCalibration);
                                         return (
-                                            <circle
-                                                key={`${point.x}-${point.y}-${index}`}
-                                                cx={pixel.px}
-                                                cy={pixel.py}
-                                                fill="#facc15"
-                                                r={5 / zoom}
-                                                stroke="#020617"
-                                                strokeWidth={2 / zoom}
-                                            />
+                                            <g key={`${point.x}-${point.y}-${index}`}>
+                                                <circle
+                                                    cx={pixel.px}
+                                                    cy={pixel.py}
+                                                    fill="#facc15"
+                                                    r={6 / zoom}
+                                                    stroke="#020617"
+                                                    strokeWidth={2 / zoom}
+                                                />
+                                                <text
+                                                    fill="#0f172a"
+                                                    fontSize={13 / zoom}
+                                                    fontWeight={800}
+                                                    paintOrder="stroke"
+                                                    stroke="#ffffff"
+                                                    strokeWidth={4 / zoom}
+                                                    x={pixel.px + 8 / zoom}
+                                                    y={pixel.py - 8 / zoom}
+                                                >
+                                                    区域点{index + 1}
+                                                </text>
+                                            </g>
                                         );
                                     })}
                                 </g>
@@ -1446,9 +1806,12 @@ export const RoutePlannerPage: FC = () => {
                                             strokeWidth={2 / zoom}
                                         />
                                         <text
-                                            fill="#f8fafc"
+                                            fill="#0f172a"
                                             fontSize={13 / zoom}
                                             fontWeight={700}
+                                            paintOrder="stroke"
+                                            stroke="#ffffff"
+                                            strokeWidth={4 / zoom}
                                             x={center.px + 9 / zoom}
                                             y={center.py - 8 / zoom}
                                         >
@@ -1458,17 +1821,39 @@ export const RoutePlannerPage: FC = () => {
                                 );
                             })}
                             {previewPath.length > 1 && (
-                                <polyline
-                                    fill="none"
-                                    points={previewPath
-                                        .map((point) => realToPixel(point, activeCalibration))
-                                        .map((point) => `${point.px},${point.py}`)
-                                        .join(" ")}
-                                    stroke="#f97316"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={5 / zoom}
-                                />
+                                <g>
+                                    <polyline
+                                        fill="none"
+                                        points={previewPath
+                                            .map((point) => realToPixel(point, activeCalibration))
+                                            .map((point) => `${point.px},${point.py}`)
+                                            .join(" ")}
+                                        stroke="rgba(249, 115, 22, 0.45)"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={7 / zoom}
+                                    />
+                                    {previewPath.slice(1).map((point, index) => {
+                                        const from = realToPixel(
+                                            previewPath[index],
+                                            activeCalibration,
+                                        );
+                                        const to = realToPixel(point, activeCalibration);
+                                        return (
+                                            <line
+                                                key={`${point.seq}-${index}`}
+                                                markerEnd="url(#route-direction-arrow)"
+                                                stroke="#f97316"
+                                                strokeLinecap="round"
+                                                strokeWidth={4 / zoom}
+                                                x1={from.px}
+                                                x2={to.px}
+                                                y1={from.py}
+                                                y2={to.py}
+                                            />
+                                        );
+                                    })}
+                                </g>
                             )}
                             {mapConfig.calibration &&
                                 (["p1", "p2"] as const).map((key, index) => {
@@ -1511,6 +1896,43 @@ export const RoutePlannerPage: FC = () => {
                                     y={Math.min(selectionRect.startPy, selectionRect.endPy)}
                                 />
                             )}
+                            {step === "islands" &&
+                                Object.entries(autoGridAnchors).map(([key, realPoint]) => {
+                                    if (!realPoint) {
+                                        return null;
+                                    }
+                                    const point = realToPixel(realPoint, activeCalibration);
+                                    const label =
+                                        key === "origin"
+                                            ? "左上"
+                                            : key === "right"
+                                              ? "右邻"
+                                              : "下邻";
+                                    return (
+                                        <g key={key}>
+                                            <circle
+                                                cx={point.px}
+                                                cy={point.py}
+                                                fill="#f59e0b"
+                                                r={8 / zoom}
+                                                stroke="#020617"
+                                                strokeWidth={2 / zoom}
+                                            />
+                                            <text
+                                                fill="#0f172a"
+                                                fontSize={13 / zoom}
+                                                fontWeight={800}
+                                                paintOrder="stroke"
+                                                stroke="#ffffff"
+                                                strokeWidth={4 / zoom}
+                                                x={point.px + 10 / zoom}
+                                                y={point.py + 4 / zoom}
+                                            >
+                                                {label}
+                                            </text>
+                                        </g>
+                                    );
+                                })}
                             {feedbackPoint && (
                                 <g>
                                     <circle
@@ -1530,9 +1952,12 @@ export const RoutePlannerPage: FC = () => {
                                         strokeWidth={2 / zoom}
                                     />
                                     <text
-                                        fill="#fef9c3"
+                                        fill="#0f172a"
                                         fontSize={13 / zoom}
                                         fontWeight={700}
+                                        paintOrder="stroke"
+                                        stroke="#ffffff"
+                                        strokeWidth={4 / zoom}
                                         x={feedbackPoint.px + 12 / zoom}
                                         y={feedbackPoint.py - 10 / zoom}
                                     >
@@ -1692,7 +2117,9 @@ export const RoutePlannerPage: FC = () => {
                                 <HelpCircleIcon className="h-4 w-4 text-cyan-300" />
                                 帮助
                             </span>
-                            <span className="text-xs text-slate-400">{showHelp ? "收起" : "展开"}</span>
+                            <span className="text-xs text-slate-400">
+                                {showHelp ? "收起" : "展开"}
+                            </span>
                         </button>
                         {showHelp && (
                             <div className="grid gap-2 text-xs text-slate-400">
@@ -1759,6 +2186,41 @@ export const RoutePlannerPage: FC = () => {
                                     先用“区域”模式逐点画出 A-F
                                     区域并点击完成区域，再用“犊牛岛”模式标中心点，用“服务点”模式指定投喂停靠点。
                                 </p>
+                                {mapConfig.zones.length > 0 && zoneDraft.length === 0 && (
+                                    <div className="grid gap-2 rounded-md border border-cyan-400/30 bg-cyan-400/10 p-3">
+                                        <div className="text-sm font-medium text-cyan-100">
+                                            已完成 {mapConfig.zones.length} 个区域
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button
+                                                className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                                type="button"
+                                                onClick={() => {
+                                                    setMode("island");
+                                                    setIslandZoneID(autoGridZoneID);
+                                                    setIslandID(`${autoGridZoneID}1`);
+                                                }}
+                                            >
+                                                标犊牛岛
+                                            </button>
+                                            <button
+                                                className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                                                disabled={sortedIslands.length === 0}
+                                                type="button"
+                                                onClick={() => {
+                                                    setActiveIslandID(
+                                                        activeIslandID ||
+                                                            sortedIslands[0]?.id ||
+                                                            "",
+                                                    );
+                                                    setMode("service");
+                                                }}
+                                            >
+                                                标服务点
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                                 <div className="grid grid-cols-3 gap-2 text-sm">
                                     <input
                                         className="rounded-md border border-white/10 bg-slate-900 px-2 py-2"
@@ -1794,6 +2256,12 @@ export const RoutePlannerPage: FC = () => {
                                         </option>
                                     ))}
                                 </select>
+                                {mode === "service" && (
+                                    <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+                                        当前服务点：{activeIslandID || sortedIslands[0]?.id || "-"}
+                                        。 每标完一个服务点会自动切到下一个犊牛岛。
+                                    </div>
+                                )}
                                 <button
                                     className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
                                     type="button"
@@ -1802,6 +2270,99 @@ export const RoutePlannerPage: FC = () => {
                                     <MapIcon className="h-4 w-4" />
                                     完成区域
                                 </button>
+                                <div className="grid gap-3 rounded-md border border-white/10 bg-slate-900 p-3">
+                                    <div>
+                                        <div className="text-sm font-medium text-slate-100">
+                                            批量生成犊牛岛中心点
+                                        </div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                            先点区域内最左上中心点和右侧相邻中心点；下方相邻点可选，不标时默认用相同间距向下生成。
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2 text-sm">
+                                        <select
+                                            className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
+                                            value={autoGridZoneID}
+                                            onChange={(event) => {
+                                                const nextZone = event.target.value;
+                                                setAutoGridZoneID(nextZone);
+                                                setAutoGridStartID(`${nextZone}1`);
+                                                setAutoGridAnchors({});
+                                            }}
+                                        >
+                                            {zoneIDs.map((zone) => (
+                                                <option key={zone} value={zone}>
+                                                    {zone}区
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <input
+                                            className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
+                                            value={autoGridStartID}
+                                            onChange={(event) =>
+                                                setAutoGridStartID(event.target.value.toUpperCase())
+                                            }
+                                        />
+                                        <input
+                                            className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
+                                            min={1}
+                                            type="number"
+                                            value={autoGridMaxRows}
+                                            onChange={(event) =>
+                                                setAutoGridMaxRows(
+                                                    Math.max(1, Number(event.target.value) || 1),
+                                                )
+                                            }
+                                        />
+                                        <input
+                                            className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
+                                            min={1}
+                                            type="number"
+                                            value={autoGridMaxCols}
+                                            onChange={(event) =>
+                                                setAutoGridMaxCols(
+                                                    Math.max(1, Number(event.target.value) || 1),
+                                                )
+                                            }
+                                        />
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {[
+                                            ["origin", "左上起点"],
+                                            ["right", "右侧相邻"],
+                                            ["down", "下方相邻"],
+                                        ].map(([value, label]) => (
+                                            <button
+                                                key={value}
+                                                className={`rounded-md px-2 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-40 ${
+                                                    autoGridPick === value
+                                                        ? "bg-cyan-400 text-slate-950"
+                                                        : "bg-slate-800 hover:bg-slate-700"
+                                                }`}
+                                                disabled={zoneDraft.length > 0}
+                                                type="button"
+                                                onClick={() => {
+                                                    chooseMode("autoGrid");
+                                                    setAutoGridPick(value as AutoGridPick);
+                                                }}
+                                            >
+                                                {label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="text-xs text-slate-400">
+                                        左上 {autoGridAnchors.origin ? "已标" : "未标"} · 右侧{" "}
+                                        {autoGridAnchors.right ? "已标" : "未标"} · 下方{" "}
+                                        {autoGridAnchors.down ? "已标" : "未标"}
+                                    </div>
+                                    <button
+                                        className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                        type="button"
+                                        onClick={generateAutoGridIslands}
+                                    >
+                                        生成本区域中心点
+                                    </button>
+                                </div>
                                 <button
                                     className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
                                     type="button"
@@ -1816,6 +2377,15 @@ export const RoutePlannerPage: FC = () => {
                                 <p className="text-xs text-slate-500">
                                     沿通道中心线按顺序点击节点，系统会自动连线；点击“断开连线”后可从新的通道段开始。右键节点或边可删除。
                                 </p>
+                                {mode !== "road" && (
+                                    <button
+                                        className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                        type="button"
+                                        onClick={() => setMode("road")}
+                                    >
+                                        继续标定通道路线
+                                    </button>
+                                )}
                                 <select
                                     className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
                                     value={roadEdgeType}
