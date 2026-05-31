@@ -147,7 +147,12 @@ export function normalizeMap(raw: Partial<MapConfig> | null | undefined): MapCon
         currentStep: raw?.currentStep || "upload",
         description: raw?.description,
         imageUrl: raw?.imageUrl,
-        islands: Array.isArray(raw?.islands) ? raw.islands : [],
+        islands: Array.isArray(raw?.islands)
+            ? raw.islands.map((island) => ({
+                  ...island,
+                  servicePoint: island.center,
+              }))
+            : [],
         mapID: raw?.mapID || "",
         name: raw?.name || "未命名平面图",
         roadGraph: {
@@ -417,10 +422,11 @@ export function buildGeneratedPath(
         return [];
     }
 
+    const feedPoint = (island: Island): RealPoint => island.center;
     const startPoint =
         vehicle?.location_x != null && vehicle.location_y != null
             ? { x: vehicle.location_x, y: vehicle.location_y }
-            : mapConfig.roadGraph.nodes[0] || selectedIslands[0].servicePoint;
+            : mapConfig.roadGraph.nodes[0] || feedPoint(selectedIslands[0]);
     const points: GeneratedPoint[] = [];
     appendUnique(points, {
         action: "start",
@@ -430,12 +436,13 @@ export function buildGeneratedPath(
 
     if (mapConfig.roadGraph.nodes.length === 0) {
         selectedIslands.forEach((island) => {
+            const target = feedPoint(island);
             appendUnique(points, {
                 action: "feed",
                 feedAmount,
                 targetIslandID: island.id,
-                x: island.servicePoint.x,
-                y: island.servicePoint.y,
+                x: target.x,
+                y: target.y,
             });
         });
         return points;
@@ -456,13 +463,14 @@ export function buildGeneratedPath(
         let bestIndex = 0;
         let bestScore = Number.POSITIVE_INFINITY;
         remaining.forEach((island, index) => {
-            const targetNode = findNearestNode(mapConfig.roadGraph, island.servicePoint);
+            const target = feedPoint(island);
+            const targetNode = findNearestNode(mapConfig.roadGraph, target);
             if (!targetNode) {
                 return;
             }
             const score =
                 pathDistance(mapConfig.roadGraph, currentNode?.id || targetNode.id, targetNode.id) +
-                distance(targetNode, island.servicePoint);
+                distance(targetNode, target);
             if (score < bestScore) {
                 bestIndex = index;
                 bestScore = score;
@@ -470,14 +478,15 @@ export function buildGeneratedPath(
         });
 
         const island = remaining.splice(bestIndex, 1)[0];
-        const targetNode = findNearestNode(mapConfig.roadGraph, island.servicePoint);
+        const target = feedPoint(island);
+        const targetNode = findNearestNode(mapConfig.roadGraph, target);
         if (!targetNode) {
             appendUnique(points, {
                 action: "feed",
                 feedAmount,
                 targetIslandID: island.id,
-                x: island.servicePoint.x,
-                y: island.servicePoint.y,
+                x: target.x,
+                y: target.y,
             });
             continue;
         }
@@ -491,8 +500,8 @@ export function buildGeneratedPath(
             action: "feed",
             feedAmount,
             targetIslandID: island.id,
-            x: island.servicePoint.x,
-            y: island.servicePoint.y,
+            x: target.x,
+            y: target.y,
         });
         currentNode = targetNode;
     }

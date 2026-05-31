@@ -7,7 +7,6 @@ import {
     HelpCircleIcon,
     InfoIcon,
     MapIcon,
-    MousePointer2Icon,
     MoveIcon,
     PanelLeftIcon,
     PlusIcon,
@@ -60,7 +59,7 @@ import {
     unwrapData,
 } from "@/pages/robot-map.shared.ts";
 
-type Mode = "autoGrid" | "calibrate" | "island" | "pan" | "road" | "select" | "service" | "zone";
+type Mode = "autoGrid" | "calibrate" | "island" | "pan" | "road" | "select" | "zone";
 
 type DragState =
     | {
@@ -115,7 +114,6 @@ const MODE_OPTIONS: { icon: typeof MoveIcon; label: string; value: Mode }[] = [
     { icon: CrosshairIcon, label: "标定", value: "calibrate" },
     { icon: MapIcon, label: "区域", value: "zone" },
     { icon: TargetIcon, label: "犊牛岛", value: "island" },
-    { icon: MousePointer2Icon, label: "服务点", value: "service" },
     { icon: WaypointsIcon, label: "通道", value: "road" },
     { icon: BoxSelectIcon, label: "框选", value: "select" },
 ];
@@ -132,7 +130,7 @@ const STEPS: { description: string; title: string; value: WizardStep }[] = [
         value: "calibration",
     },
     {
-        description: "先画 A-F 区域，再标出犊牛岛中心点和投喂服务点。",
+        description: "先画 A-F 区域，再标出每个犊牛岛旁的车辆投喂停靠点。",
         title: "犊牛岛标定",
         value: "islands",
     },
@@ -183,15 +181,6 @@ function sameStringSet(items: Set<string>, values: string[]): boolean {
     return values.every((value) => items.has(value));
 }
 
-function compareIslandID(left: string, right: string): number {
-    const leftZone = left.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || "";
-    const rightZone = right.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || "";
-    if (leftZone !== rightZone) {
-        return leftZone.localeCompare(rightZone);
-    }
-    return idNumber(left) - idNumber(right);
-}
-
 function pointInPolygon(point: RealPoint, polygon: RealPoint[]): boolean {
     if (polygon.length < 3) {
         return false;
@@ -221,7 +210,7 @@ function isModeAllowedForStep(mode: Mode, step: WizardStep): boolean {
         return mode === "calibrate";
     }
     if (step === "islands") {
-        return mode === "autoGrid" || mode === "island" || mode === "service" || mode === "zone";
+        return mode === "autoGrid" || mode === "island" || mode === "zone";
     }
     if (step === "roads") {
         return mode === "road";
@@ -242,8 +231,8 @@ function stepHelp(step: WizardStep): string[] {
     if (step === "islands") {
         return [
             "区域模式逐点画 A-F 区域，点击完成区域保存。",
-            "区域完成后可直接进入犊牛岛中心点或服务点标定。",
-            "批量生成工具用左上、右邻、可选下邻样点自动生成区域内中心点。",
+            "犊牛岛模式标的是车辆给该岛投喂时的停靠点，一个点就是一个犊牛岛。",
+            "批量生成工具用左上、右邻、可选下邻样点自动生成区域内投喂点。",
         ];
     }
     if (step === "roads") {
@@ -285,7 +274,6 @@ export const RoutePlannerPage: FC = () => {
     const [zoneDraft, setZoneDraft] = useState<RealPoint[]>([]);
     const [islandID, setIslandID] = useState("A1");
     const [islandZoneID, setIslandZoneID] = useState("A");
-    const [activeIslandID, setActiveIslandID] = useState("");
     const [roadEdgeType, setRoadEdgeType] = useState<"inner" | "main">("main");
     const [selectedMarkers, setSelectedMarkers] = useState<Set<string>>(new Set());
     const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
@@ -313,10 +301,6 @@ export const RoutePlannerPage: FC = () => {
     const selectedTargetIslands = useMemo(
         () => mapConfig.islands.filter((island) => targetIslandIDs.has(island.id)),
         [mapConfig.islands, targetIslandIDs],
-    );
-    const sortedIslands = useMemo(
-        () => [...mapConfig.islands].sort((a, b) => compareIslandID(a.id, b.id)),
-        [mapConfig.islands],
     );
     const imageSrc = mapImageSrc(mapConfig, apiBase, imageVersion);
     const isPathReady = Boolean(
@@ -416,12 +400,6 @@ export const RoutePlannerPage: FC = () => {
             setMode("pan");
         }
     }, [step]);
-
-    useEffect(() => {
-        if (mode === "service" && sortedIslands.length > 0 && !activeIslandID) {
-            setActiveIslandID(sortedIslands[0].id);
-        }
-    }, [activeIslandID, mode, sortedIslands]);
 
     useEffect(() => {
         if (!mapConfig.mapID) {
@@ -665,7 +643,6 @@ export const RoutePlannerPage: FC = () => {
         } else if (step === "islands") {
             setMapConfig((current) => ({ ...current, islands: [], zones: [] }));
             setZoneDraft([]);
-            setActiveIslandID("");
             setAutoGridAnchors({});
             setAutoGridPick(null);
             clearGeneratedPath();
@@ -904,36 +881,8 @@ export const RoutePlannerPage: FC = () => {
                 true,
             );
             showClickFeedback(point, nextIsland.id);
-            setActiveIslandID(nextIsland.id);
             setIslandID(nextIslandID(nextIsland.id));
-            setMessage(`${nextIsland.id} 已标注`);
-            return;
-        }
-        if (step === "islands" && mode === "service") {
-            const targetID = activeIslandID || sortedIslands[0]?.id;
-            if (!targetID) {
-                setMessage("请先标注犊牛岛中心点");
-                return;
-            }
-            updateMap(
-                (current) => ({
-                    ...current,
-                    islands: current.islands.map((island) =>
-                        island.id === targetID ? { ...island, servicePoint: real } : island,
-                    ),
-                }),
-                true,
-                true,
-            );
-            const currentIndex = sortedIslands.findIndex((island) => island.id === targetID);
-            const nextIsland = sortedIslands[currentIndex + 1] || null;
-            showClickFeedback(point, `${targetID}服务点`);
-            setActiveIslandID(nextIsland?.id || targetID);
-            setMessage(
-                nextIsland
-                    ? `${targetID} 服务点已更新，下一点：${nextIsland.id}`
-                    : `${targetID} 服务点已更新，已到最后一个犊牛岛`,
-            );
+            setMessage(`${nextIsland.id} 投喂点已标注`);
             return;
         }
         if (step === "roads" && mode === "road") {
@@ -961,10 +910,10 @@ export const RoutePlannerPage: FC = () => {
         );
         setMessage(
             autoGridPick === "origin"
-                ? "已标左上起点，请标右侧相邻犊牛岛中心点"
+                ? "已标左上起点，请标右侧相邻犊牛岛投喂点"
                 : autoGridPick === "right"
                   ? "已标横向间距，可继续标下方相邻点或直接生成"
-                  : "已标纵向间距，可以生成本区域犊牛岛中心点",
+                  : "已标纵向间距，可以生成本区域犊牛岛投喂点",
         );
     }
 
@@ -973,7 +922,7 @@ export const RoutePlannerPage: FC = () => {
         const origin = autoGridAnchors.origin;
         const right = autoGridAnchors.right;
         if (!zone || !origin || !right) {
-            setMessage("请先选择区域，并标左上起点和右侧相邻中心点");
+            setMessage("请先选择区域，并标左上起点和右侧相邻投喂点");
             return;
         }
         const horizontal = { x: right.x - origin.x, y: right.y - origin.y };
@@ -1037,7 +986,7 @@ export const RoutePlannerPage: FC = () => {
         }
         if (
             !window.confirm(
-                `将覆盖 ${autoGridZoneID} 区已有 ${prefix} 编号犊牛岛，并生成 ${created.length} 个中心点？`,
+                `将覆盖 ${autoGridZoneID} 区已有 ${prefix} 编号犊牛岛，并生成 ${created.length} 个投喂点？`,
             )
         ) {
             return;
@@ -1061,9 +1010,8 @@ export const RoutePlannerPage: FC = () => {
         );
         setIslandZoneID(autoGridZoneID);
         setIslandID(nextIslandID(created[created.length - 1].id));
-        setActiveIslandID(created[0].id);
-        setMode("service");
-        setMessage(`已自动生成 ${created.length} 个犊牛岛中心点，请开始依次标服务点`);
+        setMode("island");
+        setMessage(`已自动生成 ${created.length} 个犊牛岛投喂点，可继续补充或进入通道路线`);
     }
 
     function addRoadPoint(point: RealPoint): void {
@@ -1402,7 +1350,7 @@ export const RoutePlannerPage: FC = () => {
         setZoneID(String.fromCharCode(id.charCodeAt(0) + 1));
         setAutoGridZoneID(id);
         setAutoGridStartID(`${id}1`);
-        setMessage(`${id}区已完成，可继续标下一区域或开始标犊牛岛中心点`);
+        setMessage(`${id}区已完成，可继续标下一区域或开始标犊牛岛投喂点`);
     }
 
     function selectZone(zoneIDValue: string): void {
@@ -1769,20 +1717,10 @@ export const RoutePlannerPage: FC = () => {
                             })}
                             {mapConfig.islands.map((island) => {
                                 const center = realToPixel(island.center, activeCalibration);
-                                const service = realToPixel(island.servicePoint, activeCalibration);
                                 const selected = selectedMarkers.has(`island:${island.id}`);
                                 const target = targetIslandIDs.has(island.id);
                                 return (
                                     <g key={island.id}>
-                                        <line
-                                            stroke={target ? "#f97316" : "#94a3b8"}
-                                            strokeDasharray="5 5"
-                                            strokeWidth={1.5 / zoom}
-                                            x1={center.px}
-                                            x2={service.px}
-                                            y1={center.py}
-                                            y2={service.py}
-                                        />
                                         <circle
                                             cx={center.px}
                                             cy={center.py}
@@ -1795,14 +1733,6 @@ export const RoutePlannerPage: FC = () => {
                                             }
                                             r={7 / zoom}
                                             stroke="#020617"
-                                            strokeWidth={2 / zoom}
-                                        />
-                                        <circle
-                                            cx={service.px}
-                                            cy={service.py}
-                                            fill="#0f172a"
-                                            r={5 / zoom}
-                                            stroke="#f97316"
                                             strokeWidth={2 / zoom}
                                         />
                                         <text
@@ -2184,14 +2114,14 @@ export const RoutePlannerPage: FC = () => {
                             <div className="grid gap-3">
                                 <p className="text-xs text-slate-500">
                                     先用“区域”模式逐点画出 A-F
-                                    区域并点击完成区域，再用“犊牛岛”模式标中心点，用“服务点”模式指定投喂停靠点。
+                                    区域并点击完成区域，再用“犊牛岛”模式标出每个岛旁边的车辆投喂停靠点。
                                 </p>
                                 {mapConfig.zones.length > 0 && zoneDraft.length === 0 && (
                                     <div className="grid gap-2 rounded-md border border-cyan-400/30 bg-cyan-400/10 p-3">
                                         <div className="text-sm font-medium text-cyan-100">
                                             已完成 {mapConfig.zones.length} 个区域
                                         </div>
-                                        <div className="grid grid-cols-2 gap-2">
+                                        <div className="grid gap-2">
                                             <button
                                                 className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
                                                 type="button"
@@ -2201,22 +2131,7 @@ export const RoutePlannerPage: FC = () => {
                                                     setIslandID(`${autoGridZoneID}1`);
                                                 }}
                                             >
-                                                标犊牛岛
-                                            </button>
-                                            <button
-                                                className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
-                                                disabled={sortedIslands.length === 0}
-                                                type="button"
-                                                onClick={() => {
-                                                    setActiveIslandID(
-                                                        activeIslandID ||
-                                                            sortedIslands[0]?.id ||
-                                                            "",
-                                                    );
-                                                    setMode("service");
-                                                }}
-                                            >
-                                                标服务点
+                                                标犊牛岛投喂点
                                             </button>
                                         </div>
                                     </div>
@@ -2244,24 +2159,6 @@ export const RoutePlannerPage: FC = () => {
                                         }
                                     />
                                 </div>
-                                <select
-                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                                    value={activeIslandID}
-                                    onChange={(event) => setActiveIslandID(event.target.value)}
-                                >
-                                    <option value="">选择服务点所属犊牛岛</option>
-                                    {mapConfig.islands.map((island) => (
-                                        <option key={island.id} value={island.id}>
-                                            {island.id}
-                                        </option>
-                                    ))}
-                                </select>
-                                {mode === "service" && (
-                                    <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
-                                        当前服务点：{activeIslandID || sortedIslands[0]?.id || "-"}
-                                        。 每标完一个服务点会自动切到下一个犊牛岛。
-                                    </div>
-                                )}
                                 <button
                                     className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
                                     type="button"
@@ -2273,10 +2170,10 @@ export const RoutePlannerPage: FC = () => {
                                 <div className="grid gap-3 rounded-md border border-white/10 bg-slate-900 p-3">
                                     <div>
                                         <div className="text-sm font-medium text-slate-100">
-                                            批量生成犊牛岛中心点
+                                            批量生成犊牛岛投喂点
                                         </div>
                                         <div className="mt-1 text-xs text-slate-500">
-                                            先点区域内最左上中心点和右侧相邻中心点；下方相邻点可选，不标时默认用相同间距向下生成。
+                                            先点区域内最左上投喂点和右侧相邻投喂点；下方相邻点可选，不标时默认用相同间距向下生成。
                                         </div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-2 text-sm">
@@ -2360,7 +2257,7 @@ export const RoutePlannerPage: FC = () => {
                                         type="button"
                                         onClick={generateAutoGridIslands}
                                     >
-                                        生成本区域中心点
+                                        生成本区域投喂点
                                     </button>
                                 </div>
                                 <button
