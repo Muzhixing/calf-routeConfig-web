@@ -3,15 +3,20 @@ import {
     BoxSelectIcon,
     CheckIcon,
     CrosshairIcon,
+    EraserIcon,
+    HelpCircleIcon,
+    InfoIcon,
     MapIcon,
     MousePointer2Icon,
     MoveIcon,
+    PanelLeftIcon,
     PlusIcon,
     RefreshCwIcon,
     RouteIcon,
     SaveIcon,
     TargetIcon,
     Trash2Icon,
+    Undo2Icon,
     UploadIcon,
     WaypointsIcon,
     ZoomInIcon,
@@ -82,6 +87,17 @@ type SelectionRect = {
     startPy: number;
 };
 
+type EditSnapshot = {
+    currentPlan: RoutePlan | null;
+    mapConfig: MapConfig;
+    targetIslandIDs: string[];
+    zoneDraft: RealPoint[];
+};
+
+type FeedbackPoint = PixelPoint & {
+    label: string;
+};
+
 const MAX_ZOOM = 3;
 const MIN_ZOOM = 0.25;
 const ZOOM_STEP = 1.15;
@@ -138,11 +154,42 @@ function lineDistance(point: RealPoint, a: RealPoint, b: RealPoint): number {
     return distance(point, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 }
 
+function cloneJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function sameStringSet(items: Set<string>, values: string[]): boolean {
+    if (items.size !== values.length) {
+        return false;
+    }
+    return values.every((value) => items.has(value));
+}
+
+function stepHelp(step: WizardStep): string[] {
+    if (step === "upload") {
+        return ["左侧列表管理历史平面图。", "点击新建后上传图片，图片和草稿会自动保存。"];
+    }
+    if (step === "calibration") {
+        return ["点击 P1/P2 后在图上选择对应点。", "两个点距离越远比例尺越稳定，右键标记点或框选后可删除。"];
+    }
+    if (step === "islands") {
+        return ["区域模式逐点画 A-F 区域，点击完成区域保存。", "犊牛岛模式标中心点，服务点模式标车辆投喂停靠点。"];
+    }
+    if (step === "roads") {
+        return ["通道模式沿道路中心逐点点击，系统按顺序连线。", "点击断开连线后可从另一段通道重新开始，右键节点或边可删除。"];
+    }
+    return [
+        "可下发路径是投喂任务页能够直接发送给板卡的 robotPath。",
+        "先选择目标犊牛岛，再点击生成可下发路径；目标变化后需要重新生成。",
+    ];
+}
+
 export const RoutePlannerPage: FC = () => {
     const fileRef = useRef<HTMLInputElement | null>(null);
     const viewportRef = useRef<HTMLDivElement | null>(null);
     const mapSaveTimerRef = useRef<number | null>(null);
     const planSaveTimerRef = useRef<number | null>(null);
+    const feedbackTimerRef = useRef<number | null>(null);
     const skipMapSaveRef = useRef(false);
     const skipPlanSaveRef = useRef(false);
     const dragRef = useRef<DragState>(null);
@@ -174,6 +221,9 @@ export const RoutePlannerPage: FC = () => {
     const [mapSaveStatus, setMapSaveStatus] = useState("等待编辑");
     const [planSaveStatus, setPlanSaveStatus] = useState("等待方案");
     const [message, setMessage] = useState("请选择历史平面图或新建地图");
+    const [history, setHistory] = useState<EditSnapshot[]>([]);
+    const [feedbackPoint, setFeedbackPoint] = useState<FeedbackPoint | null>(null);
+    const [showHelp, setShowHelp] = useState(true);
 
     const activeCalibration = useMemo(
         () => (hasCalibration(mapConfig.calibration) ? mapConfig.calibration : null),
@@ -184,6 +234,11 @@ export const RoutePlannerPage: FC = () => {
         [mapConfig.islands, targetIslandIDs],
     );
     const imageSrc = mapImageSrc(mapConfig, apiBase, imageVersion);
+    const isPathReady = Boolean(
+        currentPlan?.robotPath.length &&
+            sameStringSet(targetIslandIDs, currentPlan.targetIslandIDs || []),
+    );
+    const previewPath = isPathReady ? currentPlan?.robotPath || [] : [];
 
     const loadPlans = useCallback(
         async (mapID: string, preferredPlanID?: string) => {
@@ -253,6 +308,15 @@ export const RoutePlannerPage: FC = () => {
     useEffect(() => {
         void loadMaps().catch((error) => setMessage(String(error)));
     }, [loadMaps]);
+
+    useEffect(
+        () => () => {
+            if (feedbackTimerRef.current) {
+                window.clearTimeout(feedbackTimerRef.current);
+            }
+        },
+        [],
+    );
 
     useEffect(() => {
         if (step === "calibration") {
@@ -364,12 +428,68 @@ export const RoutePlannerPage: FC = () => {
         setPlans((items) => [saved, ...items.filter((item) => item.planID !== saved.planID)]);
     }
 
-    function updateMap(mutator: (current: MapConfig) => MapConfig): void {
+    function pushHistory(): void {
+        setHistory((items) =>
+            [
+                ...items.slice(-29),
+                {
+                    currentPlan: currentPlan ? cloneJson(currentPlan) : null,
+                    mapConfig: cloneJson(mapConfig),
+                    targetIslandIDs: [...targetIslandIDs],
+                    zoneDraft: cloneJson(zoneDraft),
+                },
+            ],
+        );
+    }
+
+    function updateMap(mutator: (current: MapConfig) => MapConfig, recordHistory = true): void {
+        if (recordHistory) {
+            pushHistory();
+        }
         setMapConfig((current) => mutator(normalizeMap(current)));
     }
 
-    function updatePlan(mutator: (current: RoutePlan) => RoutePlan): void {
+    function updatePlan(mutator: (current: RoutePlan) => RoutePlan, recordHistory = true): void {
+        if (recordHistory) {
+            pushHistory();
+        }
         setCurrentPlan((current) => (current ? mutator(current) : current));
+    }
+
+    function undoLast(): void {
+        const last = history[history.length - 1];
+        if (!last) {
+            return;
+        }
+        setMapConfig(last.mapConfig);
+        setCurrentPlan(last.currentPlan);
+        setTargetIslandIDs(new Set(last.targetIslandIDs));
+        setZoneDraft(last.zoneDraft);
+        setSelectedMarkers(new Set());
+        setHistory((items) => items.slice(0, -1));
+        setMessage("已撤回上一步");
+    }
+
+    function showClickFeedback(point: PixelPoint, label: string): void {
+        setFeedbackPoint({ ...point, label });
+        if (feedbackTimerRef.current) {
+            window.clearTimeout(feedbackTimerRef.current);
+        }
+        feedbackTimerRef.current = window.setTimeout(() => setFeedbackPoint(null), 1200);
+    }
+
+    function applyTargetSelection(next: Set<string>): void {
+        pushHistory();
+        setTargetIslandIDs(next);
+        setCurrentPlan((plan) =>
+            plan
+                ? {
+                      ...plan,
+                      robotPath: [],
+                      targetIslandIDs: [...next],
+                  }
+                : plan,
+        );
     }
 
     async function createNewMap(): Promise<MapConfig> {
@@ -391,6 +511,90 @@ export const RoutePlannerPage: FC = () => {
         setMaps((items) => [data, ...items.filter((item) => item.mapID !== data.mapID)]);
         setMessage("新地图草稿已创建，请上传平面图");
         return data;
+    }
+
+    async function deleteCurrentMap(): Promise<void> {
+        if (!mapConfig.mapID) {
+            return;
+        }
+        if (!window.confirm(`删除平面图「${mapConfig.name || mapConfig.mapID}」及其路线方案？`)) {
+            return;
+        }
+        const response = await fetch(
+            apiUrl(apiBase, `/api/maps/${encodeURIComponent(mapConfig.mapID)}`),
+            {
+                credentials: "same-origin",
+                method: "DELETE",
+            },
+        );
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const remaining = maps.filter((item) => item.mapID !== mapConfig.mapID);
+        setMaps(remaining);
+        setPlans([]);
+        setCurrentPlan(null);
+        setTargetIslandIDs(new Set());
+        setSelectedMarkers(new Set());
+        setHistory([]);
+        if (remaining[0]) {
+            await loadMap(remaining[0].mapID);
+        } else {
+            skipMapSaveRef.current = true;
+            setMapConfig(DEFAULT_MAP);
+            setStep("upload");
+        }
+        setMessage("平面图已删除");
+    }
+
+    function clearCurrentStep(): void {
+        if (!window.confirm("清空当前步骤中的标注内容？")) {
+            return;
+        }
+        pushHistory();
+        if (step === "calibration") {
+            setMapConfig((current) => ({ ...current, calibration: null }));
+        } else if (step === "islands") {
+            setMapConfig((current) => ({ ...current, islands: [], zones: [] }));
+            setZoneDraft([]);
+            setActiveIslandID("");
+        } else if (step === "roads") {
+            setMapConfig((current) => ({ ...current, roadGraph: { edges: [], nodes: [] } }));
+            roadCursorRef.current = null;
+        } else if (step === "save") {
+            applyTargetSelection(new Set());
+        }
+        setSelectedMarkers(new Set());
+        setMessage("当前步骤已清空");
+    }
+
+    function clearAllAnnotations(): void {
+        if (!window.confirm("清空当前平面图的全部标定、犊牛岛、通道和可下发路径？")) {
+            return;
+        }
+        pushHistory();
+        setMapConfig((current) => ({
+            ...current,
+            calibration: null,
+            currentStep: "upload",
+            islands: [],
+            roadGraph: { edges: [], nodes: [] },
+            zones: [],
+        }));
+        setCurrentPlan((plan) =>
+            plan
+                ? {
+                      ...plan,
+                      robotPath: [],
+                      targetIslandIDs: [],
+                  }
+                : plan,
+        );
+        setStep("upload");
+        setTargetIslandIDs(new Set());
+        setZoneDraft([]);
+        setSelectedMarkers(new Set());
+        setMessage("全部标注已清空");
     }
 
     async function createNewPlan(): Promise<void> {
@@ -512,10 +716,13 @@ export const RoutePlannerPage: FC = () => {
     function handleMapClick(point: PixelPoint): void {
         const real = pixelToReal(point, activeCalibration);
         if (step === "calibration" || mode === "calibrate") {
+            showClickFeedback(point, calibrationClick.toUpperCase());
             setCalibrationPoint(calibrationClick, point);
             return;
         }
         if (step === "islands" && mode === "zone") {
+            pushHistory();
+            showClickFeedback(point, `区域点 ${zoneDraft.length + 1}`);
             setZoneDraft((items) => [...items, real]);
             return;
         }
@@ -537,6 +744,7 @@ export const RoutePlannerPage: FC = () => {
                     nextIsland,
                 ],
             }));
+            showClickFeedback(point, nextIsland.id);
             setActiveIslandID(nextIsland.id);
             setIslandID(nextIslandID(nextIsland.id));
             setMessage(`${nextIsland.id} 已标注`);
@@ -550,10 +758,12 @@ export const RoutePlannerPage: FC = () => {
                     island.id === targetID ? { ...island, servicePoint: real } : island,
                 ),
             }));
+            showClickFeedback(point, "服务点");
             setMessage(targetID ? `${targetID} 服务点已更新` : "请先选择犊牛岛");
             return;
         }
         if (step === "roads" && mode === "road") {
+            showClickFeedback(point, "通道点");
             addRoadPoint(real);
         }
     }
@@ -763,8 +973,7 @@ export const RoutePlannerPage: FC = () => {
                     : best,
             );
             if (Math.hypot(nearest.px - point.px, nearest.py - point.py) < 20 / zoom) {
-                setSelectedMarkers(new Set([`cal:${nearest.key}`]));
-                deleteSelected();
+                deleteSelected(new Set([`cal:${nearest.key}`]));
             }
         }
         const real = pixelToReal(point, activeCalibration);
@@ -876,7 +1085,7 @@ export const RoutePlannerPage: FC = () => {
         const selected = mapConfig.islands
             .filter((island) => island.zoneID === zoneIDValue)
             .map((island) => island.id);
-        setTargetIslandIDs(new Set(selected));
+        applyTargetSelection(new Set(selected));
     }
 
     function selectRange(): void {
@@ -895,7 +1104,7 @@ export const RoutePlannerPage: FC = () => {
         }
         const min = Math.min(start, end);
         const max = Math.max(start, end);
-        setTargetIslandIDs(
+        applyTargetSelection(
             new Set(
                 mapConfig.islands
                     .filter(
@@ -939,7 +1148,60 @@ export const RoutePlannerPage: FC = () => {
 
     return (
         <LayoutContent fixed className="h-[calc(100vh-4rem)]">
-            <div className="grid h-full grid-cols-[minmax(0,1fr)_440px] bg-slate-950 text-slate-100 max-xl:grid-cols-1">
+            <div className="grid h-full grid-cols-[280px_minmax(0,1fr)_440px] bg-slate-950 text-slate-100 max-2xl:grid-cols-[240px_minmax(0,1fr)_420px] max-xl:grid-cols-1">
+                <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto border-r border-white/10 bg-slate-950 p-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                        <PanelLeftIcon className="h-4 w-4 text-cyan-300" />
+                        平面图列表
+                    </div>
+                    <button
+                        className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                        type="button"
+                        onClick={() => void createNewMap().catch((error) => setMessage(String(error)))}
+                    >
+                        <PlusIcon className="h-4 w-4" />
+                        新增平面图
+                    </button>
+                    <div className="grid gap-2">
+                        {maps.map((item) => (
+                            <button
+                                key={item.mapID}
+                                className={`rounded-md border p-3 text-left text-sm ${
+                                    item.mapID === mapConfig.mapID
+                                        ? "border-cyan-400 bg-cyan-400 text-slate-950"
+                                        : "border-white/10 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                                }`}
+                                type="button"
+                                onClick={() => void loadMap(item.mapID).catch((error) => setMessage(String(error)))}
+                            >
+                                <span className="block font-medium">{item.name || item.mapID}</span>
+                                <span className="mt-1 block text-xs opacity-75">
+                                    区域 {item.zones.length} · 犊牛岛 {item.islands.length}
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+                    <div className="mt-auto grid gap-2 border-t border-white/10 pt-3">
+                        <button
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                            disabled={!mapConfig.mapID}
+                            type="button"
+                            onClick={() => void saveMapNow(mapConfig).catch((error) => setMessage(String(error)))}
+                        >
+                            <SaveIcon className="h-4 w-4" />
+                            保存当前平面图
+                        </button>
+                        <button
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400 disabled:opacity-40"
+                            disabled={!mapConfig.mapID}
+                            type="button"
+                            onClick={() => void deleteCurrentMap().catch((error) => setMessage(String(error)))}
+                        >
+                            <Trash2Icon className="h-4 w-4" />
+                            删除当前平面图
+                        </button>
+                    </div>
+                </aside>
                 <main
                     ref={viewportRef}
                     className="relative min-h-[620px] overflow-hidden border-r border-white/10 bg-slate-950"
@@ -950,7 +1212,12 @@ export const RoutePlannerPage: FC = () => {
                     onMouseUp={handleMouseUp}
                     onWheel={handleWheel}
                 >
-                    <div className="absolute left-4 top-4 z-20 flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 shadow-lg">
+                    <div
+                        className="absolute left-4 top-4 z-20 flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 shadow-lg"
+                        onClick={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onMouseUp={(event) => event.stopPropagation()}
+                    >
                         {[
                             { icon: MoveIcon, label: "平移", value: "pan" },
                             { icon: CrosshairIcon, label: "标定", value: "calibrate" },
@@ -980,7 +1247,12 @@ export const RoutePlannerPage: FC = () => {
                         })}
                     </div>
 
-                    <div className="absolute right-4 top-4 z-20 flex items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 text-sm text-slate-300">
+                    <div
+                        className="absolute right-4 top-4 z-20 flex items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 text-sm text-slate-300"
+                        onClick={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onMouseUp={(event) => event.stopPropagation()}
+                    >
                         <button
                             className="grid h-8 w-8 place-items-center rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
                             disabled={zoom <= MIN_ZOOM}
@@ -1070,16 +1342,32 @@ export const RoutePlannerPage: FC = () => {
                                 );
                             })}
                             {zoneDraft.length > 0 && (
-                                <polyline
-                                    fill="none"
-                                    points={zoneDraft
-                                        .map((point) => realToPixel(point, activeCalibration))
-                                        .map((point) => `${point.px},${point.py}`)
-                                        .join(" ")}
-                                    stroke="#facc15"
-                                    strokeDasharray="5 5"
-                                    strokeWidth={2 / zoom}
-                                />
+                                <g>
+                                    <polyline
+                                        fill="none"
+                                        points={zoneDraft
+                                            .map((point) => realToPixel(point, activeCalibration))
+                                            .map((point) => `${point.px},${point.py}`)
+                                            .join(" ")}
+                                        stroke="#facc15"
+                                        strokeDasharray="5 5"
+                                        strokeWidth={2 / zoom}
+                                    />
+                                    {zoneDraft.map((point, index) => {
+                                        const pixel = realToPixel(point, activeCalibration);
+                                        return (
+                                            <circle
+                                                key={`${point.x}-${point.y}-${index}`}
+                                                cx={pixel.px}
+                                                cy={pixel.py}
+                                                fill="#facc15"
+                                                r={5 / zoom}
+                                                stroke="#020617"
+                                                strokeWidth={2 / zoom}
+                                            />
+                                        );
+                                    })}
+                                </g>
                             )}
                             {mapConfig.roadGraph.edges.map((edge) => {
                                 const nodes = nodeMap(mapConfig.roadGraph);
@@ -1169,10 +1457,10 @@ export const RoutePlannerPage: FC = () => {
                                     </g>
                                 );
                             })}
-                            {currentPlan && currentPlan.robotPath.length > 1 && (
+                            {previewPath.length > 1 && (
                                 <polyline
                                     fill="none"
-                                    points={currentPlan.robotPath
+                                    points={previewPath
                                         .map((point) => realToPixel(point, activeCalibration))
                                         .map((point) => `${point.px},${point.py}`)
                                         .join(" ")}
@@ -1223,6 +1511,35 @@ export const RoutePlannerPage: FC = () => {
                                     y={Math.min(selectionRect.startPy, selectionRect.endPy)}
                                 />
                             )}
+                            {feedbackPoint && (
+                                <g>
+                                    <circle
+                                        cx={feedbackPoint.px}
+                                        cy={feedbackPoint.py}
+                                        fill="rgba(250, 204, 21, 0.35)"
+                                        r={18 / zoom}
+                                        stroke="#facc15"
+                                        strokeWidth={3 / zoom}
+                                    />
+                                    <circle
+                                        cx={feedbackPoint.px}
+                                        cy={feedbackPoint.py}
+                                        fill="#facc15"
+                                        r={6 / zoom}
+                                        stroke="#020617"
+                                        strokeWidth={2 / zoom}
+                                    />
+                                    <text
+                                        fill="#fef9c3"
+                                        fontSize={13 / zoom}
+                                        fontWeight={700}
+                                        x={feedbackPoint.px + 12 / zoom}
+                                        y={feedbackPoint.py - 10 / zoom}
+                                    >
+                                        {feedbackPoint.label}
+                                    </text>
+                                </g>
+                            )}
                         </svg>
                     </div>
                 </main>
@@ -1246,6 +1563,34 @@ export const RoutePlannerPage: FC = () => {
                             <RefreshCwIcon className="h-4 w-4" />
                         </button>
                     </div>
+
+                    <section className="grid grid-cols-2 gap-2 rounded-md border border-white/10 bg-slate-950 p-3">
+                        <button
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                            disabled={history.length === 0}
+                            type="button"
+                            onClick={undoLast}
+                        >
+                            <Undo2Icon className="h-4 w-4" />
+                            撤回上一步
+                        </button>
+                        <button
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                            type="button"
+                            onClick={clearCurrentStep}
+                        >
+                            <EraserIcon className="h-4 w-4" />
+                            清空当前步骤
+                        </button>
+                        <button
+                            className="col-span-2 inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400"
+                            type="button"
+                            onClick={clearAllAnnotations}
+                        >
+                            <Trash2Icon className="h-4 w-4" />
+                            一键清空全部标注
+                        </button>
+                    </section>
 
                     <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
                         <div className="grid grid-cols-[1fr_auto] gap-2">
@@ -1335,6 +1680,30 @@ export const RoutePlannerPage: FC = () => {
                                 </span>
                             </button>
                         ))}
+                    </section>
+
+                    <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
+                        <button
+                            className="flex items-center justify-between text-left text-sm font-medium"
+                            type="button"
+                            onClick={() => setShowHelp((value) => !value)}
+                        >
+                            <span className="inline-flex items-center gap-2">
+                                <HelpCircleIcon className="h-4 w-4 text-cyan-300" />
+                                帮助
+                            </span>
+                            <span className="text-xs text-slate-400">{showHelp ? "收起" : "展开"}</span>
+                        </button>
+                        {showHelp && (
+                            <div className="grid gap-2 text-xs text-slate-400">
+                                {stepHelp(step).map((item) => (
+                                    <div key={item} className="flex gap-2">
+                                        <InfoIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-300" />
+                                        <span>{item}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </section>
 
                     <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
@@ -1475,6 +1844,9 @@ export const RoutePlannerPage: FC = () => {
                         )}
                         {step === "save" && (
                             <div className="grid gap-3">
+                                <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+                                    可下发路径是投喂任务页能够直接下发给板卡的路径点列表。选择目标犊牛岛后点击“生成可下发路径”，目标岛或投喂量变化后需要重新生成。
+                                </div>
                                 <div className="grid grid-cols-[1fr_auto] gap-2">
                                     <select
                                         className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
@@ -1526,9 +1898,15 @@ export const RoutePlannerPage: FC = () => {
                                         className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
                                         type="number"
                                         value={feedAmount}
-                                        onChange={(event) =>
-                                            setFeedAmount(Number(event.target.value) || 0)
-                                        }
+                                        onChange={(event) => {
+                                            const nextAmount = Number(event.target.value) || 0;
+                                            setFeedAmount(nextAmount);
+                                            updatePlan((plan) => ({
+                                                ...plan,
+                                                feedAmount: nextAmount,
+                                                robotPath: [],
+                                            }));
+                                        }}
                                     />
                                     <button
                                         className="rounded-md bg-slate-800 px-3 py-2 hover:bg-slate-700"
@@ -1571,17 +1949,15 @@ export const RoutePlannerPage: FC = () => {
                                                 key={island.id}
                                                 className={`rounded-md px-2 py-1 text-xs ${targetIslandIDs.has(island.id) ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-300"}`}
                                                 type="button"
-                                                onClick={() =>
-                                                    setTargetIslandIDs((items) => {
-                                                        const next = new Set(items);
-                                                        if (next.has(island.id)) {
-                                                            next.delete(island.id);
-                                                        } else {
-                                                            next.add(island.id);
-                                                        }
-                                                        return next;
-                                                    })
-                                                }
+                                                onClick={() => {
+                                                    const next = new Set(targetIslandIDs);
+                                                    if (next.has(island.id)) {
+                                                        next.delete(island.id);
+                                                    } else {
+                                                        next.add(island.id);
+                                                    }
+                                                    applyTargetSelection(next);
+                                                }}
                                             >
                                                 {island.id}
                                             </button>
@@ -1589,15 +1965,21 @@ export const RoutePlannerPage: FC = () => {
                                     </div>
                                 </div>
                                 <button
-                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
+                                    disabled={!currentPlan || targetIslandIDs.size === 0}
                                     type="button"
                                     onClick={generateAndSavePlan}
                                 >
                                     <RouteIcon className="h-4 w-4" />
-                                    生成并保存路线方案
+                                    生成可下发路径
                                 </button>
                                 <div className="text-xs text-slate-400">
-                                    {planSaveStatus} · 路径点 {currentPlan?.robotPath.length || 0}
+                                    {planSaveStatus} ·{" "}
+                                    {isPathReady
+                                        ? `可下发路径已生成，路径点 ${previewPath.length}`
+                                        : targetIslandIDs.size
+                                          ? "目标已选择，请生成可下发路径"
+                                          : "请选择目标犊牛岛"}
                                 </div>
                             </div>
                         )}

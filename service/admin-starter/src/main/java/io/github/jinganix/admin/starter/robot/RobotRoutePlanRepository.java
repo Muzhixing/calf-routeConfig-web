@@ -8,4 +8,6 @@ import org.springframework.stereotype.Repository;
 public interface RobotRoutePlanRepository extends JpaRepository<RobotRoutePlan, String> {
 
   List<RobotRoutePlan> findByMapId(String mapId);
+
+  void deleteByMapId(String mapId);
 }

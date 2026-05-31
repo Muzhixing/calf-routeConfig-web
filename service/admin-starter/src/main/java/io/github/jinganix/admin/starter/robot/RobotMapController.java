@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -53,6 +54,11 @@ public class RobotMapController {
   @GetMapping("/{mapID}")
   public Map<String, Object> getMap(@PathVariable String mapID) {
     return ok("查询成功", robotMapService.getMap(mapID));
+  }
+
+  @DeleteMapping("/{mapID}")
+  public Map<String, Object> deleteMap(@PathVariable String mapID) throws IOException {
+    return ok("地图已删除", robotMapService.deleteMap(mapID));
   }
 
   @PatchMapping("/{mapID}")

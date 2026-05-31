@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
@@ -65,6 +66,20 @@ public class RobotMapService {
 
   public Map<String, Object> getMap(String mapId) {
     return toResponse(mapRepository.findById(mapId).orElseGet(() -> defaultConfig(mapId)));
+  }
+
+  @Transactional
+  public Map<String, Object> deleteMap(String mapId) throws IOException {
+    RobotMapConfig current = mapRepository.findById(mapId).orElse(null);
+    if (current == null) {
+      return Map.of("mapID", mapId, "deleted", false);
+    }
+    planRepository.deleteByMapId(mapId);
+    mapRepository.delete(current);
+    if (current.getImagePath() != null) {
+      Files.deleteIfExists(Path.of(current.getImagePath()));
+    }
+    return Map.of("mapID", mapId, "deleted", true);
   }
 
   public Map<String, Object> saveActiveMap(Map<String, Object> payload) {
