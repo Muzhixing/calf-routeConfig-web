@@ -10,6 +10,7 @@ import {
     MoveIcon,
     PanelLeftIcon,
     PlusIcon,
+    Redo2Icon,
     RefreshCwIcon,
     RouteIcon,
     SaveIcon,
@@ -87,8 +88,12 @@ type SelectionRect = {
 };
 
 type EditSnapshot = {
+    autoGridAnchors: AutoGridAnchors;
+    autoGridPick: AutoGridPick;
     currentPlan: RoutePlan | null;
     mapConfig: MapConfig;
+    mode: Mode;
+    step: WizardStep;
     targetIslandIDs: string[];
     zoneDraft: RealPoint[];
 };
@@ -232,7 +237,7 @@ function stepHelp(step: WizardStep): string[] {
         return [
             "区域模式逐点画 A-F 区域，点击完成区域保存。",
             "犊牛岛模式标的是车辆给该岛投喂时的停靠点，一个点就是一个犊牛岛。",
-            "批量生成工具用左上、右邻、可选下邻样点自动生成区域内投喂点。",
+            "批量生成工具用左上、右邻、可选下邻样点自动生成区域内投喂点；同一样点可反复点击微调。",
         ];
     }
     if (step === "roads") {
@@ -285,6 +290,7 @@ export const RoutePlannerPage: FC = () => {
     const [planSaveStatus, setPlanSaveStatus] = useState("等待方案");
     const [message, setMessage] = useState("请选择历史平面图或新建地图");
     const [history, setHistory] = useState<EditSnapshot[]>([]);
+    const [futureHistory, setFutureHistory] = useState<EditSnapshot[]>([]);
     const [feedbackPoint, setFeedbackPoint] = useState<FeedbackPoint | null>(null);
     const [showHelp, setShowHelp] = useState(true);
     const [autoGridAnchors, setAutoGridAnchors] = useState<AutoGridAnchors>({});
@@ -497,16 +503,35 @@ export const RoutePlannerPage: FC = () => {
         setPlans((items) => [saved, ...items.filter((item) => item.planID !== saved.planID)]);
     }
 
+    function createSnapshot(): EditSnapshot {
+        return {
+            autoGridAnchors: cloneJson(autoGridAnchors),
+            autoGridPick,
+            currentPlan: currentPlan ? cloneJson(currentPlan) : null,
+            mapConfig: cloneJson(mapConfig),
+            mode,
+            step,
+            targetIslandIDs: [...targetIslandIDs],
+            zoneDraft: cloneJson(zoneDraft),
+        };
+    }
+
+    function restoreSnapshot(snapshot: EditSnapshot): void {
+        setMapConfig(snapshot.mapConfig);
+        setCurrentPlan(snapshot.currentPlan);
+        setTargetIslandIDs(new Set(snapshot.targetIslandIDs));
+        setZoneDraft(snapshot.zoneDraft);
+        setAutoGridAnchors(snapshot.autoGridAnchors);
+        setAutoGridPick(snapshot.autoGridPick);
+        setStep(snapshot.step);
+        setMode(snapshot.mode);
+        setSelectedMarkers(new Set());
+    }
+
     function pushHistory(): void {
-        setHistory((items) => [
-            ...items.slice(-29),
-            {
-                currentPlan: currentPlan ? cloneJson(currentPlan) : null,
-                mapConfig: cloneJson(mapConfig),
-                targetIslandIDs: [...targetIslandIDs],
-                zoneDraft: cloneJson(zoneDraft),
-            },
-        ]);
+        const snapshot = createSnapshot();
+        setHistory((items) => [...items.slice(-29), snapshot]);
+        setFutureHistory([]);
     }
 
     function clearGeneratedPath(): void {
@@ -546,13 +571,23 @@ export const RoutePlannerPage: FC = () => {
         if (!last) {
             return;
         }
-        setMapConfig(last.mapConfig);
-        setCurrentPlan(last.currentPlan);
-        setTargetIslandIDs(new Set(last.targetIslandIDs));
-        setZoneDraft(last.zoneDraft);
-        setSelectedMarkers(new Set());
+        const current = createSnapshot();
+        restoreSnapshot(last);
         setHistory((items) => items.slice(0, -1));
+        setFutureHistory((items) => [current, ...items.slice(0, 29)]);
         setMessage("已撤回上一步");
+    }
+
+    function redoLast(): void {
+        const next = futureHistory[0];
+        if (!next) {
+            return;
+        }
+        const current = createSnapshot();
+        restoreSnapshot(next);
+        setFutureHistory((items) => items.slice(1));
+        setHistory((items) => [...items.slice(-29), current]);
+        setMessage("已恢复下一步");
     }
 
     function showClickFeedback(point: PixelPoint, label: string): void {
@@ -622,6 +657,7 @@ export const RoutePlannerPage: FC = () => {
         setTargetIslandIDs(new Set());
         setSelectedMarkers(new Set());
         setHistory([]);
+        setFutureHistory([]);
         if (remaining[0]) {
             await loadMap(remaining[0].mapID);
         } else {
@@ -632,19 +668,82 @@ export const RoutePlannerPage: FC = () => {
         setMessage("平面图已删除");
     }
 
+    function clearIslandZones(): void {
+        if (!window.confirm("清空已标区域和当前区域草稿？投喂点会保留。")) {
+            return;
+        }
+        pushHistory();
+        setMapConfig((current) => ({
+            ...normalizeMap(current),
+            zones: [],
+        }));
+        setZoneDraft([]);
+        setAutoGridAnchors({});
+        setAutoGridPick(null);
+        setSelectedMarkers(new Set());
+        clearGeneratedPath();
+        setMessage("区域已清空，投喂点已保留");
+    }
+
+    function clearIslandPoints(): void {
+        if (!window.confirm("清空所有犊牛岛投喂点？已标区域会保留。")) {
+            return;
+        }
+        pushHistory();
+        setMapConfig((current) => ({
+            ...normalizeMap(current),
+            islands: [],
+        }));
+        setTargetIslandIDs(new Set());
+        setCurrentPlan((plan) =>
+            plan
+                ? {
+                      ...plan,
+                      robotPath: [],
+                      targetIslandIDs: [],
+                  }
+                : plan,
+        );
+        setAutoGridAnchors({});
+        setAutoGridPick(null);
+        setSelectedMarkers(new Set());
+        setMessage("投喂点已清空，区域已保留");
+    }
+
+    function clearAutoGridAnchor(): void {
+        const key = autoGridPick;
+        if (!key || !autoGridAnchors[key]) {
+            return;
+        }
+        pushHistory();
+        setAutoGridAnchors((current) => {
+            const next = { ...current };
+            delete next[key];
+            return next;
+        });
+        setMessage("当前样点已撤销，可重新点击地图标定");
+    }
+
+    function clearAutoGridAnchors(): void {
+        if (!autoGridAnchors.origin && !autoGridAnchors.right && !autoGridAnchors.down) {
+            return;
+        }
+        pushHistory();
+        setAutoGridAnchors({});
+        setMessage("批量标定样点已清空");
+    }
+
     function clearCurrentStep(): void {
+        if (step === "islands") {
+            setMessage("第三步请分别使用“清空区域”或“清空投喂点”");
+            return;
+        }
         if (!window.confirm("清空当前步骤中的标注内容？")) {
             return;
         }
         pushHistory();
         if (step === "calibration") {
             setMapConfig((current) => ({ ...current, calibration: null }));
-            clearGeneratedPath();
-        } else if (step === "islands") {
-            setMapConfig((current) => ({ ...current, islands: [], zones: [] }));
-            setZoneDraft([]);
-            setAutoGridAnchors({});
-            setAutoGridPick(null);
             clearGeneratedPath();
         } else if (step === "roads") {
             setMapConfig((current) => ({ ...current, roadGraph: { edges: [], nodes: [] } }));
@@ -896,6 +995,7 @@ export const RoutePlannerPage: FC = () => {
             setMessage("请先在右侧批量生成工具中选择要标定的样点");
             return;
         }
+        pushHistory();
         setAutoGridAnchors((current) => ({ ...current, [autoGridPick]: real }));
         showClickFeedback(
             point,
@@ -905,15 +1005,12 @@ export const RoutePlannerPage: FC = () => {
                   ? "右侧相邻点"
                   : "下方相邻点",
         );
-        setAutoGridPick(
-            autoGridPick === "origin" ? "right" : autoGridPick === "right" ? "down" : null,
-        );
         setMessage(
             autoGridPick === "origin"
-                ? "已标左上起点，请标右侧相邻犊牛岛投喂点"
+                ? "左上起点已标，可继续点击微调，满意后再点右侧相邻"
                 : autoGridPick === "right"
-                  ? "已标横向间距，可继续标下方相邻点或直接生成"
-                  : "已标纵向间距，可以生成本区域犊牛岛投喂点",
+                  ? "右侧相邻点已标，可继续点击微调，满意后可标下方相邻或直接生成"
+                  : "下方相邻点已标，可继续点击微调或生成本区域投喂点",
         );
     }
 
@@ -1930,13 +2027,47 @@ export const RoutePlannerPage: FC = () => {
                             撤回上一步
                         </button>
                         <button
-                            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                            disabled={futureHistory.length === 0}
                             type="button"
-                            onClick={clearCurrentStep}
+                            onClick={redoLast}
                         >
-                            <EraserIcon className="h-4 w-4" />
-                            清空当前步骤
+                            <Redo2Icon className="h-4 w-4" />
+                            恢复下一步
                         </button>
+                        {step === "islands" ? (
+                            <>
+                                <button
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                                    disabled={
+                                        mapConfig.zones.length === 0 && zoneDraft.length === 0
+                                    }
+                                    type="button"
+                                    onClick={clearIslandZones}
+                                >
+                                    <EraserIcon className="h-4 w-4" />
+                                    清空区域
+                                </button>
+                                <button
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                                    disabled={mapConfig.islands.length === 0}
+                                    type="button"
+                                    onClick={clearIslandPoints}
+                                >
+                                    <TargetIcon className="h-4 w-4" />
+                                    清空投喂点
+                                </button>
+                            </>
+                        ) : (
+                            <button
+                                className="col-span-2 inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                                type="button"
+                                onClick={clearCurrentStep}
+                            >
+                                <EraserIcon className="h-4 w-4" />
+                                清空当前步骤
+                            </button>
+                        )}
                         <button
                             className="col-span-2 inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400"
                             type="button"
@@ -2174,6 +2305,7 @@ export const RoutePlannerPage: FC = () => {
                                         </div>
                                         <div className="mt-1 text-xs text-slate-500">
                                             先点区域内最左上投喂点和右侧相邻投喂点；下方相邻点可选，不标时默认用相同间距向下生成。
+                                            当前样点会保持选中，可重复点击微调，满意后再切换下一个样点。
                                         </div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-2 text-sm">
@@ -2182,6 +2314,7 @@ export const RoutePlannerPage: FC = () => {
                                             value={autoGridZoneID}
                                             onChange={(event) => {
                                                 const nextZone = event.target.value;
+                                                pushHistory();
                                                 setAutoGridZoneID(nextZone);
                                                 setAutoGridStartID(`${nextZone}1`);
                                                 setAutoGridAnchors({});
@@ -2251,6 +2384,30 @@ export const RoutePlannerPage: FC = () => {
                                         左上 {autoGridAnchors.origin ? "已标" : "未标"} · 右侧{" "}
                                         {autoGridAnchors.right ? "已标" : "未标"} · 下方{" "}
                                         {autoGridAnchors.down ? "已标" : "未标"}
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            className="rounded-md bg-slate-800 px-3 py-2 text-xs hover:bg-slate-700 disabled:opacity-40"
+                                            disabled={
+                                                !autoGridPick || !autoGridAnchors[autoGridPick]
+                                            }
+                                            type="button"
+                                            onClick={clearAutoGridAnchor}
+                                        >
+                                            撤销当前样点
+                                        </button>
+                                        <button
+                                            className="rounded-md bg-slate-800 px-3 py-2 text-xs hover:bg-slate-700 disabled:opacity-40"
+                                            disabled={
+                                                !autoGridAnchors.origin &&
+                                                !autoGridAnchors.right &&
+                                                !autoGridAnchors.down
+                                            }
+                                            type="button"
+                                            onClick={clearAutoGridAnchors}
+                                        >
+                                            清空样点
+                                        </button>
                                     </div>
                                     <button
                                         className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
