@@ -89,13 +89,21 @@ type SelectionRect = {
 
 type EditSnapshot = {
     autoGridAnchors: AutoGridAnchors;
+    autoGridMaxCols: number;
+    autoGridMaxRows: number;
     autoGridPick: AutoGridPick;
+    autoGridStartID: string;
+    autoGridZoneID: string;
     currentPlan: RoutePlan | null;
+    islandID: string;
+    islandZoneID: string;
     mapConfig: MapConfig;
     mode: Mode;
+    roadCursorID: string | null;
     step: WizardStep;
     targetIslandIDs: string[];
     zoneDraft: RealPoint[];
+    zoneID: string;
 };
 
 type FeedbackPoint = PixelPoint & {
@@ -186,6 +194,13 @@ function sameStringSet(items: Set<string>, values: string[]): boolean {
     return values.every((value) => items.has(value));
 }
 
+function nextZoneIDValue(id: string): string {
+    if (/^[A-Y]$/.test(id)) {
+        return String.fromCharCode(id.charCodeAt(0) + 1);
+    }
+    return id;
+}
+
 function pointInPolygon(point: RealPoint, polygon: RealPoint[]): boolean {
     if (polygon.length < 3) {
         return false;
@@ -219,6 +234,16 @@ function pointInZoneGenerationArea(
     const minY = Math.min(...ys) - tolerance;
     const maxY = Math.max(...ys) + tolerance;
     return point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY;
+}
+
+function polygonCenter(points: RealPoint[]): RealPoint {
+    if (points.length === 0) {
+        return { x: 0, y: 0 };
+    }
+    return {
+        x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+        y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+    };
 }
 
 function isModeAllowedForStep(mode: Mode, step: WizardStep): boolean {
@@ -280,7 +305,7 @@ export const RoutePlannerPage: FC = () => {
     const skipPlanSaveRef = useRef(false);
     const dragRef = useRef<DragState>(null);
     const roadCursorRef = useRef<string | null>(null);
-    const [apiBase, setApiBase] = useState(environment.apiHost || "");
+    const apiBase = environment.apiHost || "";
     const [maps, setMaps] = useState<MapConfig[]>([]);
     const [plans, setPlans] = useState<RoutePlan[]>([]);
     const [mapConfig, setMapConfig] = useState<MapConfig>(DEFAULT_MAP);
@@ -523,13 +548,21 @@ export const RoutePlannerPage: FC = () => {
     function createSnapshot(): EditSnapshot {
         return {
             autoGridAnchors: cloneJson(autoGridAnchors),
+            autoGridMaxCols,
+            autoGridMaxRows,
             autoGridPick,
+            autoGridStartID,
+            autoGridZoneID,
             currentPlan: currentPlan ? cloneJson(currentPlan) : null,
+            islandID,
+            islandZoneID,
             mapConfig: cloneJson(mapConfig),
             mode,
+            roadCursorID: roadCursorRef.current,
             step,
             targetIslandIDs: [...targetIslandIDs],
             zoneDraft: cloneJson(zoneDraft),
+            zoneID,
         };
     }
 
@@ -539,14 +572,21 @@ export const RoutePlannerPage: FC = () => {
         setTargetIslandIDs(new Set(snapshot.targetIslandIDs));
         setZoneDraft(snapshot.zoneDraft);
         setAutoGridAnchors(snapshot.autoGridAnchors);
+        setAutoGridMaxCols(snapshot.autoGridMaxCols);
+        setAutoGridMaxRows(snapshot.autoGridMaxRows);
         setAutoGridPick(snapshot.autoGridPick);
+        setAutoGridStartID(snapshot.autoGridStartID);
+        setAutoGridZoneID(snapshot.autoGridZoneID);
+        setIslandID(snapshot.islandID);
+        setIslandZoneID(snapshot.islandZoneID);
+        setZoneID(snapshot.zoneID);
         setStep(snapshot.step);
         setMode(snapshot.mode);
+        roadCursorRef.current = snapshot.roadCursorID;
         setSelectedMarkers(new Set());
     }
 
-    function pushHistory(): void {
-        const snapshot = createSnapshot();
+    function pushHistory(snapshot = createSnapshot()): void {
         setHistory((items) => [...items.slice(-29), snapshot]);
         setFutureHistory([]);
     }
@@ -886,7 +926,11 @@ export const RoutePlannerPage: FC = () => {
     }
 
     function setStepAndSave(value: WizardStep): void {
-        roadCursorRef.current = null;
+        if (value !== "roads") {
+            roadCursorRef.current = null;
+        }
+        dragRef.current = null;
+        setSelectionRect(null);
         setSelectedMarkers(new Set());
         setAutoGridPick(null);
         setStep(value);
@@ -908,9 +952,8 @@ export const RoutePlannerPage: FC = () => {
             setMessage("当前区域还未完成，请先点击完成区域或框选删除草稿点");
             return;
         }
-        if (nextMode !== "road") {
-            roadCursorRef.current = null;
-        }
+        dragRef.current = null;
+        setSelectionRect(null);
         if (nextMode !== "autoGrid") {
             setAutoGridPick(null);
         }
@@ -1032,7 +1075,10 @@ export const RoutePlannerPage: FC = () => {
     }
 
     function generateAutoGridIslands(): void {
-        const zone = mapConfig.zones.find((item) => item.id === autoGridZoneID);
+        const selectedZoneID = mapConfig.zones.some((item) => item.id === autoGridZoneID)
+            ? autoGridZoneID
+            : mapConfig.zones[0]?.id || autoGridZoneID;
+        const zone = mapConfig.zones.find((item) => item.id === selectedZoneID);
         const origin = autoGridAnchors.origin;
         const right = autoGridAnchors.right;
         if (!zone || !origin || !right) {
@@ -1055,7 +1101,7 @@ export const RoutePlannerPage: FC = () => {
             setMessage("纵向间距太小，无法生成");
             return;
         }
-        const prefix = autoGridStartID.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || autoGridZoneID;
+        const prefix = autoGridStartID.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || zone.id;
         const startNumber = idNumber(autoGridStartID);
         let nextNumber = Number.isFinite(startNumber) ? startNumber : 1;
         const created = [];
@@ -1096,12 +1142,13 @@ export const RoutePlannerPage: FC = () => {
                 break;
             }
         }
-        applyGeneratedAutoGrid(created, prefix);
+        applyGeneratedAutoGrid(created, prefix, zone.id);
     }
 
     function applyGeneratedAutoGrid(
         created: { center: RealPoint; id: string; servicePoint: RealPoint; zoneID: string }[],
         prefix: string,
+        zoneID: string,
     ): void {
         if (created.length === 0) {
             const text = "没有生成投喂点，请检查当前区域、起始编号和三个样点是否对应同一区域";
@@ -1111,7 +1158,7 @@ export const RoutePlannerPage: FC = () => {
         }
         if (
             !window.confirm(
-                `将覆盖 ${autoGridZoneID} 区已有 ${prefix} 编号犊牛岛，并生成 ${created.length} 个投喂点？`,
+                `将覆盖 ${zoneID} 区已有 ${prefix} 编号犊牛岛，并生成 ${created.length} 个投喂点？`,
             )
         ) {
             return;
@@ -1123,8 +1170,7 @@ export const RoutePlannerPage: FC = () => {
                     ...current,
                     islands: [
                         ...current.islands.filter(
-                            (island) =>
-                                island.zoneID !== autoGridZoneID && !generatedIds.has(island.id),
+                            (island) => island.zoneID !== zoneID && !generatedIds.has(island.id),
                         ),
                         ...created,
                     ],
@@ -1133,7 +1179,7 @@ export const RoutePlannerPage: FC = () => {
             true,
             true,
         );
-        setIslandZoneID(autoGridZoneID);
+        setIslandZoneID(zoneID);
         setIslandID(nextIslandID(created[created.length - 1].id));
         setMode("island");
         setMessage(`已自动生成 ${created.length} 个犊牛岛投喂点，可继续补充或进入通道路线`);
@@ -1159,36 +1205,40 @@ export const RoutePlannerPage: FC = () => {
                       y: roundMeter(point.y),
                   };
         const previousID = roadCursorRef.current;
+        pushHistory();
         roadCursorRef.current = node.id;
-        updateMap(
-            (current) => {
-                const nodes = reuse ? current.roadGraph.nodes : [...current.roadGraph.nodes, node];
-                const edgeExists = current.roadGraph.edges.some(
-                    (edge) =>
-                        previousID &&
-                        ((edge.from === previousID && edge.to === node.id) ||
-                            (edge.from === node.id && edge.to === previousID)),
-                );
-                const edges =
-                    previousID && previousID !== node.id && !edgeExists
-                        ? [
-                              ...current.roadGraph.edges,
-                              {
-                                  from: previousID,
-                                  id: `e${Date.now()}`,
-                                  to: node.id,
-                                  type: roadEdgeType,
-                              },
-                          ]
-                        : current.roadGraph.edges;
-                return { ...current, roadGraph: { edges, nodes } };
-            },
-            true,
-            true,
-        );
+        setMapConfig((current) => {
+            const data = normalizeMap(current);
+            const nodes = reuse ? data.roadGraph.nodes : [...data.roadGraph.nodes, node];
+            const edgeExists = data.roadGraph.edges.some(
+                (edge) =>
+                    previousID &&
+                    ((edge.from === previousID && edge.to === node.id) ||
+                        (edge.from === node.id && edge.to === previousID)),
+            );
+            const edges =
+                previousID && previousID !== node.id && !edgeExists
+                    ? [
+                          ...data.roadGraph.edges,
+                          {
+                              from: previousID,
+                              id: `e${Date.now()}`,
+                              to: node.id,
+                              type: roadEdgeType,
+                          },
+                      ]
+                    : data.roadGraph.edges;
+            return { ...data, roadGraph: { edges, nodes } };
+        });
+        clearGeneratedPath();
     }
 
     function handleMouseDown(event: MouseEvent<HTMLDivElement>): void {
+        event.preventDefault();
+        if (event.button !== 0 && event.button !== 2) {
+            return;
+        }
+        dragRef.current = null;
         const point = viewportPoint(event.clientX, event.clientY);
         if (!point) {
             return;
@@ -1220,6 +1270,11 @@ export const RoutePlannerPage: FC = () => {
         if (!drag) {
             return;
         }
+        event.preventDefault();
+        if (drag.type === "pan" && event.buttons === 0) {
+            dragRef.current = null;
+            return;
+        }
         if (drag.type === "select") {
             const point = viewportPoint(event.clientX, event.clientY);
             if (point) {
@@ -1234,9 +1289,7 @@ export const RoutePlannerPage: FC = () => {
         }
         const dx = event.clientX - drag.startClientX;
         const dy = event.clientY - drag.startClientY;
-        drag.moved =
-            drag.moved ||
-            Math.hypot(event.clientX - drag.clientX, event.clientY - drag.clientY) > 2;
+        drag.moved = drag.moved || Math.hypot(dx, dy) > 3;
         drag.clientX = event.clientX;
         drag.clientY = event.clientY;
         if (mode === "pan" || event.buttons === 2 || event.altKey) {
@@ -1245,6 +1298,7 @@ export const RoutePlannerPage: FC = () => {
     }
 
     function handleMouseUp(event: MouseEvent<HTMLDivElement>): void {
+        event.preventDefault();
         const drag = dragRef.current;
         dragRef.current = null;
         const point = viewportPoint(event.clientX, event.clientY);
@@ -1259,7 +1313,13 @@ export const RoutePlannerPage: FC = () => {
                 startPx: drag.startPx,
                 startPy: drag.startPy,
             };
-            setSelectedMarkers(selectMarkers(rect));
+            const selected = selectMarkers(rect);
+            setSelectedMarkers(selected);
+            setMessage(
+                selected.size
+                    ? `已框选 ${selected.size} 个对象，可点击删除选中`
+                    : "框选区域内没有可删除对象",
+            );
             setSelectionRect(null);
             return;
         }
@@ -1320,7 +1380,9 @@ export const RoutePlannerPage: FC = () => {
                 }
             });
             mapConfig.zones.forEach((zone) => {
+                const center = realToPixel(polygonCenter(zone.polygon), activeCalibration);
                 if (
+                    pointInRect(center, rect) ||
                     zone.polygon.some((point) =>
                         pointInRect(realToPixel(point, activeCalibration), rect),
                     )
@@ -1435,6 +1497,9 @@ export const RoutePlannerPage: FC = () => {
                 const nodeIds = new Set(
                     [...markers].filter((id) => id.startsWith("node:")).map((id) => id.slice(5)),
                 );
+                if (roadCursorRef.current && nodeIds.has(roadCursorRef.current)) {
+                    roadCursorRef.current = null;
+                }
                 return {
                     ...current,
                     calibration,
@@ -1460,19 +1525,20 @@ export const RoutePlannerPage: FC = () => {
             return;
         }
         const id = zoneID.trim().toUpperCase() || "A";
-        updateMap(
-            (current) => ({
-                ...current,
+        pushHistory();
+        setMapConfig((current) => {
+            const data = normalizeMap(current);
+            return {
+                ...data,
                 zones: [
-                    ...current.zones.filter((zone) => zone.id !== id),
+                    ...data.zones.filter((zone) => zone.id !== id),
                     { id, name: `${id}区`, polygon: zoneDraft },
                 ],
-            }),
-            true,
-            true,
-        );
+            };
+        });
+        clearGeneratedPath();
         setZoneDraft([]);
-        setZoneID(String.fromCharCode(id.charCodeAt(0) + 1));
+        setZoneID(nextZoneIDValue(id));
         setAutoGridZoneID(id);
         setAutoGridStartID(`${id}1`);
         setMessage(`${id}区已完成，可继续标下一区域或开始标犊牛岛投喂点`);
@@ -1534,12 +1600,10 @@ export const RoutePlannerPage: FC = () => {
         );
     }
 
-    const zoneIDs = useMemo(() => {
-        const ids = new Set<string>(["A", "B", "C", "D", "E", "F"]);
-        mapConfig.zones.forEach((zone) => ids.add(zone.id));
-        mapConfig.islands.forEach((island) => ids.add(island.zoneID));
-        return [...ids].sort();
-    }, [mapConfig.islands, mapConfig.zones]);
+    const savedZoneIDs = useMemo(
+        () => mapConfig.zones.map((zone) => zone.id).sort(),
+        [mapConfig.zones],
+    );
 
     const stepInfo = STEPS.find((item) => item.value === step) || STEPS[0];
 
@@ -1714,15 +1778,15 @@ export const RoutePlannerPage: FC = () => {
                             <defs>
                                 <marker
                                     id="route-direction-arrow"
-                                    markerHeight="8"
+                                    markerHeight="5"
                                     markerUnits="strokeWidth"
-                                    markerWidth="8"
+                                    markerWidth="5"
                                     orient="auto"
-                                    refX="7"
-                                    refY="4"
-                                    viewBox="0 0 8 8"
+                                    refX="4.5"
+                                    refY="2.5"
+                                    viewBox="0 0 5 5"
                                 >
-                                    <path d="M 0 0 L 8 4 L 0 8 z" fill="#f97316" />
+                                    <path d="M 0 0 L 5 2.5 L 0 5 z" fill="#2563eb" />
                                 </marker>
                             </defs>
                             {mapConfig.zones.map((zone) => {
@@ -1883,10 +1947,10 @@ export const RoutePlannerPage: FC = () => {
                                             .map((point) => realToPixel(point, activeCalibration))
                                             .map((point) => `${point.px},${point.py}`)
                                             .join(" ")}
-                                        stroke="rgba(249, 115, 22, 0.45)"
+                                        stroke="rgba(37, 99, 235, 0.22)"
                                         strokeLinecap="round"
                                         strokeLinejoin="round"
-                                        strokeWidth={7 / zoom}
+                                        strokeWidth={4 / zoom}
                                     />
                                     {previewPath.slice(1).map((point, index) => {
                                         const from = realToPixel(
@@ -1898,9 +1962,9 @@ export const RoutePlannerPage: FC = () => {
                                             <line
                                                 key={`${point.seq}-${index}`}
                                                 markerEnd="url(#route-direction-arrow)"
-                                                stroke="#f97316"
+                                                stroke="#2563eb"
                                                 strokeLinecap="round"
-                                                strokeWidth={4 / zoom}
+                                                strokeWidth={2.5 / zoom}
                                                 x1={from.px}
                                                 x2={to.px}
                                                 y1={from.py}
@@ -1940,16 +2004,40 @@ export const RoutePlannerPage: FC = () => {
                                     ) : null;
                                 })}
                             {selectionRect && (
-                                <rect
-                                    fill="rgba(34, 211, 238, 0.12)"
-                                    height={Math.abs(selectionRect.endPy - selectionRect.startPy)}
-                                    stroke="#22d3ee"
-                                    strokeDasharray="6 4"
-                                    strokeWidth={2 / zoom}
-                                    width={Math.abs(selectionRect.endPx - selectionRect.startPx)}
-                                    x={Math.min(selectionRect.startPx, selectionRect.endPx)}
-                                    y={Math.min(selectionRect.startPy, selectionRect.endPy)}
-                                />
+                                <g>
+                                    <rect
+                                        fill="rgba(34, 211, 238, 0.18)"
+                                        height={Math.abs(
+                                            selectionRect.endPy - selectionRect.startPy,
+                                        )}
+                                        stroke="#22d3ee"
+                                        strokeDasharray="6 4"
+                                        strokeWidth={3 / zoom}
+                                        width={Math.abs(
+                                            selectionRect.endPx - selectionRect.startPx,
+                                        )}
+                                        x={Math.min(selectionRect.startPx, selectionRect.endPx)}
+                                        y={Math.min(selectionRect.startPy, selectionRect.endPy)}
+                                    />
+                                    <text
+                                        fill="#0f172a"
+                                        fontSize={13 / zoom}
+                                        fontWeight={800}
+                                        paintOrder="stroke"
+                                        stroke="#ffffff"
+                                        strokeWidth={4 / zoom}
+                                        x={
+                                            Math.min(selectionRect.startPx, selectionRect.endPx) +
+                                            8 / zoom
+                                        }
+                                        y={
+                                            Math.min(selectionRect.startPy, selectionRect.endPy) -
+                                            8 / zoom
+                                        }
+                                    >
+                                        框选删除对象
+                                    </text>
+                                </g>
                             )}
                             {step === "islands" &&
                                 Object.entries(autoGridAnchors).map(([key, realPoint]) => {
@@ -2143,15 +2231,9 @@ export const RoutePlannerPage: FC = () => {
                                 updateMap((current) => ({ ...current, name: event.target.value }))
                             }
                         />
-                        <div className="grid grid-cols-[1fr_auto] gap-2">
-                            <input
-                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                                placeholder="API Base"
-                                value={apiBase}
-                                onChange={(event) => setApiBase(event.target.value)}
-                            />
+                        <div className="grid gap-2">
                             <button
-                                className="inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                                className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
                                 type="button"
                                 onClick={() => fileRef.current?.click()}
                             >
@@ -2339,16 +2421,29 @@ export const RoutePlannerPage: FC = () => {
                                     <div className="grid grid-cols-2 gap-2 text-sm">
                                         <select
                                             className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
-                                            value={autoGridZoneID}
+                                            disabled={savedZoneIDs.length === 0}
+                                            value={
+                                                savedZoneIDs.includes(autoGridZoneID)
+                                                    ? autoGridZoneID
+                                                    : ""
+                                            }
                                             onChange={(event) => {
                                                 const nextZone = event.target.value;
+                                                if (!nextZone) {
+                                                    return;
+                                                }
                                                 pushHistory();
                                                 setAutoGridZoneID(nextZone);
                                                 setAutoGridStartID(`${nextZone}1`);
                                                 setAutoGridAnchors({});
                                             }}
                                         >
-                                            {zoneIDs.map((zone) => (
+                                            <option value="">
+                                                {savedZoneIDs.length
+                                                    ? "选择已保存区域"
+                                                    : "请先完成区域"}
+                                            </option>
+                                            {savedZoneIDs.map((zone) => (
                                                 <option key={zone} value={zone}>
                                                     {zone}区
                                                 </option>
@@ -2397,7 +2492,10 @@ export const RoutePlannerPage: FC = () => {
                                                         ? "bg-cyan-400 text-slate-950"
                                                         : "bg-slate-800 hover:bg-slate-700"
                                                 }`}
-                                                disabled={zoneDraft.length > 0}
+                                                disabled={
+                                                    zoneDraft.length > 0 ||
+                                                    savedZoneIDs.length === 0
+                                                }
                                                 type="button"
                                                 onClick={() => {
                                                     chooseMode("autoGrid");
@@ -2439,6 +2537,11 @@ export const RoutePlannerPage: FC = () => {
                                     </div>
                                     <button
                                         className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                        disabled={
+                                            savedZoneIDs.length === 0 ||
+                                            !autoGridAnchors.origin ||
+                                            !autoGridAnchors.right
+                                        }
                                         type="button"
                                         onClick={generateAutoGridIslands}
                                     >
@@ -2582,18 +2685,25 @@ export const RoutePlannerPage: FC = () => {
                                         }
                                     />
                                 </div>
-                                <div className="grid grid-cols-3 gap-2">
-                                    {zoneIDs.slice(0, 6).map((zone) => (
-                                        <button
-                                            key={zone}
-                                            className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
-                                            type="button"
-                                            onClick={() => selectZone(zone)}
-                                        >
+                                <select
+                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm disabled:opacity-40"
+                                    disabled={savedZoneIDs.length === 0}
+                                    value=""
+                                    onChange={(event) => {
+                                        if (event.target.value) {
+                                            selectZone(event.target.value);
+                                        }
+                                    }}
+                                >
+                                    <option value="">
+                                        {savedZoneIDs.length ? "选择某个区域全部" : "请先保存区域"}
+                                    </option>
+                                    {savedZoneIDs.map((zone) => (
+                                        <option key={zone} value={zone}>
                                             {zone}区全部
-                                        </button>
+                                        </option>
                                     ))}
-                                </div>
+                                </select>
                                 <div className="max-h-24 overflow-auto rounded-md bg-slate-900 p-2">
                                     <div className="flex flex-wrap gap-2">
                                         {mapConfig.islands.map((island) => (
@@ -2636,14 +2746,19 @@ export const RoutePlannerPage: FC = () => {
                             </div>
                         )}
                         {selectedMarkers.size > 0 && (
-                            <button
-                                className="inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400"
-                                type="button"
-                                onClick={() => deleteSelected()}
-                            >
-                                <Trash2Icon className="h-4 w-4" />
-                                删除选中 {selectedMarkers.size}
-                            </button>
+                            <div className="grid gap-2 rounded-md border border-cyan-400/30 bg-cyan-400/10 p-3">
+                                <div className="text-xs text-cyan-100">
+                                    已框选 {selectedMarkers.size} 个对象，可批量删除。
+                                </div>
+                                <button
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400"
+                                    type="button"
+                                    onClick={() => deleteSelected()}
+                                >
+                                    <Trash2Icon className="h-4 w-4" />
+                                    删除选中 {selectedMarkers.size}
+                                </button>
+                            </div>
                         )}
                     </section>
 
