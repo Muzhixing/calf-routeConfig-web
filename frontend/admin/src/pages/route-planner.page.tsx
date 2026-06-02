@@ -1,0 +1,2760 @@
+import { environment } from "@helpers/environment.ts";
+import {
+    BoxSelectIcon,
+    CheckIcon,
+    CrosshairIcon,
+    EraserIcon,
+    HelpCircleIcon,
+    InfoIcon,
+    MapIcon,
+    MoveIcon,
+    PanelLeftIcon,
+    PlusIcon,
+    Redo2Icon,
+    RefreshCwIcon,
+    RouteIcon,
+    SaveIcon,
+    TargetIcon,
+    Trash2Icon,
+    Undo2Icon,
+    UploadIcon,
+    WaypointsIcon,
+    ZoomInIcon,
+    ZoomOutIcon,
+} from "lucide-react";
+import {
+    type ChangeEvent,
+    type FC,
+    type MouseEvent,
+    type WheelEvent,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
+import { LayoutContent } from "@/components/layout/layout.content.tsx";
+import {
+    apiUrl,
+    buildGeneratedPath,
+    DEFAULT_MAP,
+    distance,
+    EMPTY_CALIBRATION,
+    findNearestNode,
+    hasCalibration,
+    idNumber,
+    mapImageSrc,
+    type MapConfig,
+    type PixelPoint,
+    pixelToReal,
+    type RealPoint,
+    realToPixel,
+    type RoadNode,
+    roundMeter,
+    type RoutePlan,
+    normalizeMap,
+    normalizePlan,
+    nextIslandID,
+    nodeMap,
+    type WizardStep,
+    unwrapData,
+} from "@/pages/robot-map.shared.ts";
+
+type Mode = "autoGrid" | "calibrate" | "island" | "pan" | "road" | "select" | "zone";
+
+type DragState =
+    | {
+          clientX: number;
+          clientY: number;
+          moved: boolean;
+          startClientX: number;
+          startClientY: number;
+          startOffsetX: number;
+          startOffsetY: number;
+          type: "pan";
+      }
+    | {
+          startPx: number;
+          startPy: number;
+          type: "select";
+      }
+    | null;
+
+type SelectionRect = {
+    endPx: number;
+    endPy: number;
+    startPx: number;
+    startPy: number;
+};
+
+type EditSnapshot = {
+    autoGridAnchors: AutoGridAnchors;
+    autoGridMaxCols: number;
+    autoGridMaxRows: number;
+    autoGridPick: AutoGridPick;
+    autoGridStartID: string;
+    autoGridZoneID: string;
+    currentPlan: RoutePlan | null;
+    islandID: string;
+    islandZoneID: string;
+    mapConfig: MapConfig;
+    mode: Mode;
+    roadCursorID: string | null;
+    step: WizardStep;
+    targetIslandIDs: string[];
+    zoneDraft: RealPoint[];
+    zoneID: string;
+};
+
+type FeedbackPoint = PixelPoint & {
+    label: string;
+};
+
+type AutoGridPick = "bottomRight" | "down" | "origin" | "right" | null;
+
+type AutoGridAnchors = {
+    bottomRight?: RealPoint;
+    down?: RealPoint;
+    origin?: RealPoint;
+    right?: RealPoint;
+};
+
+const MAX_ZOOM = 3;
+const MIN_ZOOM = 0.25;
+const ZOOM_STEP = 1.15;
+
+const MODE_OPTIONS: { icon: typeof MoveIcon; label: string; value: Mode }[] = [
+    { icon: MoveIcon, label: "平移", value: "pan" },
+    { icon: CrosshairIcon, label: "标定", value: "calibrate" },
+    { icon: MapIcon, label: "区域", value: "zone" },
+    { icon: TargetIcon, label: "犊牛岛", value: "island" },
+    { icon: WaypointsIcon, label: "通道", value: "road" },
+    { icon: BoxSelectIcon, label: "框选", value: "select" },
+];
+
+const STEPS: { description: string; title: string; value: WizardStep }[] = [
+    {
+        description: "导入一张犊牛岛区二维平面图，或从历史平面图继续编辑。",
+        title: "导入平面图",
+        value: "upload",
+    },
+    {
+        description: "点击图上两个已知点，并填写它们的真实坐标，系统据此换算比例尺。",
+        title: "两点标定",
+        value: "calibration",
+    },
+    {
+        description: "先画 A-F 区域，再标出每个犊牛岛旁的车辆投喂停靠点。",
+        title: "犊牛岛标定",
+        value: "islands",
+    },
+    {
+        description: "沿主通道和内部通道逐点点击生成通道网络。",
+        title: "通道路线",
+        value: "roads",
+    },
+    {
+        description: "命名地图和路线方案，选择目标岛并保存方案，投喂任务页再负责下发。",
+        title: "保存方案",
+        value: "save",
+    },
+];
+
+function clampZoom(value: number): number {
+    return Number(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value)).toFixed(3));
+}
+
+function pointInRect(point: PixelPoint, rect: SelectionRect): boolean {
+    const left = Math.min(rect.startPx, rect.endPx);
+    const right = Math.max(rect.startPx, rect.endPx);
+    const top = Math.min(rect.startPy, rect.endPy);
+    const bottom = Math.max(rect.startPy, rect.endPy);
+    return point.px >= left && point.px <= right && point.py >= top && point.py <= bottom;
+}
+
+function lineDistance(point: RealPoint, a: RealPoint, b: RealPoint): number {
+    const length = Math.max(distance(a, b), 0.0001);
+    const t = Math.max(
+        0,
+        Math.min(
+            1,
+            ((point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y)) / (length * length),
+        ),
+    );
+    return distance(point, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+}
+
+function cloneJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function sameStringSet(items: Set<string>, values: string[]): boolean {
+    if (items.size !== values.length) {
+        return false;
+    }
+    return values.every((value) => items.has(value));
+}
+
+function nextZoneIDValue(id: string): string {
+    if (/^[A-Y]$/.test(id)) {
+        return String.fromCharCode(id.charCodeAt(0) + 1);
+    }
+    return id;
+}
+
+function autoGridAnchorLabel(key: Exclude<AutoGridPick, null>): string {
+    if (key === "origin") {
+        return "左上端点";
+    }
+    if (key === "right") {
+        return "右上端点";
+    }
+    if (key === "down") {
+        return "左下端点";
+    }
+    return "右下端点";
+}
+
+function interpolatePoint(start: RealPoint, end: RealPoint, ratio: number): RealPoint {
+    return {
+        x: roundMeter(start.x + (end.x - start.x) * ratio),
+        y: roundMeter(start.y + (end.y - start.y) * ratio),
+    };
+}
+
+function polygonCenter(points: RealPoint[]): RealPoint {
+    if (points.length === 0) {
+        return { x: 0, y: 0 };
+    }
+    return {
+        x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+        y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+    };
+}
+
+function isModeAllowedForStep(mode: Mode, step: WizardStep): boolean {
+    if (mode === "pan") {
+        return true;
+    }
+    if (mode === "select") {
+        return step !== "upload";
+    }
+    if (step === "calibration") {
+        return mode === "calibrate";
+    }
+    if (step === "islands") {
+        return mode === "autoGrid" || mode === "island" || mode === "zone";
+    }
+    if (step === "roads") {
+        return mode === "road";
+    }
+    return false;
+}
+
+function stepHelp(step: WizardStep): string[] {
+    if (step === "upload") {
+        return ["左侧列表管理历史平面图。", "点击新建后上传图片，图片和草稿会自动保存。"];
+    }
+    if (step === "calibration") {
+        return [
+            "点击 P1/P2 后在图上选择对应点。",
+            "两个点距离越远比例尺越稳定，右键标记点或框选后可删除。",
+        ];
+    }
+    if (step === "islands") {
+        return [
+            "区域模式逐点画 A-F 区域，点击完成区域保存。",
+            "犊牛岛模式标的是车辆给该岛投喂时的停靠点，一个点就是一个犊牛岛。",
+            "批量生成工具用左右端点和数量均分投喂点；多行时补充左下端点，右下端点可选。",
+        ];
+    }
+    if (step === "roads") {
+        return [
+            "通道模式沿道路中心逐点点击，系统按顺序连线。",
+            "平移后点击继续标定通道路线即可恢复通道标点。",
+            "点击断开连线后可从另一段通道重新开始，右键节点或边可删除。",
+        ];
+    }
+    return [
+        "可下发路径是投喂任务页能够直接发送给板卡的 robotPath。",
+        "先选择目标犊牛岛，再点击生成可下发路径；目标变化后需要重新生成。",
+    ];
+}
+
+export const RoutePlannerPage: FC = () => {
+    const fileRef = useRef<HTMLInputElement | null>(null);
+    const viewportRef = useRef<HTMLDivElement | null>(null);
+    const mapSaveTimerRef = useRef<number | null>(null);
+    const planSaveTimerRef = useRef<number | null>(null);
+    const feedbackTimerRef = useRef<number | null>(null);
+    const skipMapSaveRef = useRef(false);
+    const skipPlanSaveRef = useRef(false);
+    const dragRef = useRef<DragState>(null);
+    const roadCursorRef = useRef<string | null>(null);
+    const apiBase = environment.apiHost || "";
+    const [maps, setMaps] = useState<MapConfig[]>([]);
+    const [plans, setPlans] = useState<RoutePlan[]>([]);
+    const [mapConfig, setMapConfig] = useState<MapConfig>(DEFAULT_MAP);
+    const [currentPlan, setCurrentPlan] = useState<RoutePlan | null>(null);
+    const [step, setStep] = useState<WizardStep>("upload");
+    const [mode, setMode] = useState<Mode>("pan");
+    const [imageSize, setImageSize] = useState({ height: 900, width: 1400 });
+    const [imageVersion, setImageVersion] = useState(0);
+    const [offset, setOffset] = useState({ x: 24, y: 24 });
+    const [zoom, setZoom] = useState(0.72);
+    const [calibrationClick, setCalibrationClick] = useState<"p1" | "p2">("p1");
+    const [zoneID, setZoneID] = useState("A");
+    const [zoneDraft, setZoneDraft] = useState<RealPoint[]>([]);
+    const [islandID, setIslandID] = useState("A1");
+    const [islandZoneID, setIslandZoneID] = useState("A");
+    const [roadEdgeType, setRoadEdgeType] = useState<"inner" | "main">("main");
+    const [selectedMarkers, setSelectedMarkers] = useState<Set<string>>(new Set());
+    const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
+    const [targetIslandIDs, setTargetIslandIDs] = useState<Set<string>>(new Set());
+    const [rangeStart, setRangeStart] = useState("A1");
+    const [rangeEnd, setRangeEnd] = useState("A10");
+    const [feedAmount, setFeedAmount] = useState(500);
+    const [mapSaveStatus, setMapSaveStatus] = useState("等待编辑");
+    const [planSaveStatus, setPlanSaveStatus] = useState("等待方案");
+    const [message, setMessage] = useState("请选择历史平面图或新建地图");
+    const [history, setHistory] = useState<EditSnapshot[]>([]);
+    const [futureHistory, setFutureHistory] = useState<EditSnapshot[]>([]);
+    const [feedbackPoint, setFeedbackPoint] = useState<FeedbackPoint | null>(null);
+    const [showHelp, setShowHelp] = useState(true);
+    const [autoGridAnchors, setAutoGridAnchors] = useState<AutoGridAnchors>({});
+    const [autoGridPick, setAutoGridPick] = useState<AutoGridPick>(null);
+    const [autoGridZoneID, setAutoGridZoneID] = useState("A");
+    const [autoGridStartID, setAutoGridStartID] = useState("A1");
+    const [autoGridMaxCols, setAutoGridMaxCols] = useState(80);
+    const [autoGridMaxRows, setAutoGridMaxRows] = useState(12);
+
+    const activeCalibration = useMemo(
+        () => (hasCalibration(mapConfig.calibration) ? mapConfig.calibration : null),
+        [mapConfig.calibration],
+    );
+    const selectedTargetIslands = useMemo(
+        () => mapConfig.islands.filter((island) => targetIslandIDs.has(island.id)),
+        [mapConfig.islands, targetIslandIDs],
+    );
+    const imageSrc = mapImageSrc(mapConfig, apiBase, imageVersion);
+    const isPathReady = Boolean(
+        currentPlan?.robotPath.length &&
+        sameStringSet(targetIslandIDs, currentPlan.targetIslandIDs || []),
+    );
+    const previewPath = isPathReady ? currentPlan?.robotPath || [] : [];
+
+    const loadPlans = useCallback(
+        async (mapID: string, preferredPlanID?: string) => {
+            if (!mapID) {
+                setPlans([]);
+                setCurrentPlan(null);
+                return;
+            }
+            const response = await fetch(
+                apiUrl(apiBase, `/api/maps/${encodeURIComponent(mapID)}/plans`),
+                {
+                    credentials: "same-origin",
+                },
+            );
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = unwrapData<Partial<RoutePlan>[]>(await response.json()).map((item) =>
+                normalizePlan(item, mapID),
+            );
+            setPlans(data);
+            const selected =
+                data.find((plan) => plan.planID === preferredPlanID) || data[0] || null;
+            skipPlanSaveRef.current = true;
+            setCurrentPlan(selected);
+            setTargetIslandIDs(new Set(selected?.targetIslandIDs || []));
+            setFeedAmount(selected?.feedAmount || 500);
+        },
+        [apiBase],
+    );
+
+    const loadMap = useCallback(
+        async (mapID: string) => {
+            const response = await fetch(
+                apiUrl(apiBase, `/api/maps/${encodeURIComponent(mapID)}`),
+                {
+                    credentials: "same-origin",
+                },
+            );
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = normalizeMap(unwrapData<Partial<MapConfig>>(await response.json()));
+            skipMapSaveRef.current = true;
+            setMapConfig(data);
+            setStep(data.currentStep || (data.imageUrl ? "calibration" : "upload"));
+            setImageVersion(Date.now());
+            setSelectedMarkers(new Set());
+            setMessage(`已打开 ${data.name || data.mapID}`);
+            await loadPlans(data.mapID);
+        },
+        [apiBase, loadPlans],
+    );
+
+    const loadMaps = useCallback(async () => {
+        const response = await fetch(apiUrl(apiBase, "/api/maps"), { credentials: "same-origin" });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const data = unwrapData<Partial<MapConfig>[]>(await response.json()).map(normalizeMap);
+        setMaps(data);
+        if (data[0]?.mapID && !mapConfig.mapID) {
+            await loadMap(data[0].mapID);
+        }
+    }, [apiBase, loadMap, mapConfig.mapID]);
+
+    useEffect(() => {
+        void loadMaps().catch((error) => setMessage(String(error)));
+    }, [loadMaps]);
+
+    useEffect(
+        () => () => {
+            if (feedbackTimerRef.current) {
+                window.clearTimeout(feedbackTimerRef.current);
+            }
+        },
+        [],
+    );
+
+    useEffect(() => {
+        if (step === "calibration") {
+            setMode("calibrate");
+        } else if (step === "islands") {
+            setMode("zone");
+        } else if (step === "roads") {
+            setMode("road");
+        } else if (step === "save") {
+            setMode("select");
+        } else {
+            setMode("pan");
+        }
+    }, [step]);
+
+    useEffect(() => {
+        if (!mapConfig.mapID) {
+            return;
+        }
+        if (skipMapSaveRef.current) {
+            skipMapSaveRef.current = false;
+            return;
+        }
+        setMapSaveStatus("保存中...");
+        if (mapSaveTimerRef.current) {
+            window.clearTimeout(mapSaveTimerRef.current);
+        }
+        mapSaveTimerRef.current = window.setTimeout(() => {
+            void saveMapNow(mapConfig)
+                .then(() =>
+                    setMapSaveStatus(
+                        `已自动保存 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`,
+                    ),
+                )
+                .catch((error) => setMapSaveStatus(`保存失败 ${String(error)}`));
+        }, 800);
+        return () => {
+            if (mapSaveTimerRef.current) {
+                window.clearTimeout(mapSaveTimerRef.current);
+            }
+        };
+    }, [mapConfig]);
+
+    useEffect(() => {
+        if (!currentPlan?.planID || !mapConfig.mapID) {
+            return;
+        }
+        if (skipPlanSaveRef.current) {
+            skipPlanSaveRef.current = false;
+            return;
+        }
+        setPlanSaveStatus("保存中...");
+        if (planSaveTimerRef.current) {
+            window.clearTimeout(planSaveTimerRef.current);
+        }
+        planSaveTimerRef.current = window.setTimeout(() => {
+            void savePlanNow(currentPlan)
+                .then(() =>
+                    setPlanSaveStatus(
+                        `已自动保存 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`,
+                    ),
+                )
+                .catch((error) => setPlanSaveStatus(`保存失败 ${String(error)}`));
+        }, 800);
+        return () => {
+            if (planSaveTimerRef.current) {
+                window.clearTimeout(planSaveTimerRef.current);
+            }
+        };
+    }, [currentPlan, mapConfig.mapID]);
+
+    async function saveMapNow(data: MapConfig): Promise<void> {
+        const response = await fetch(
+            apiUrl(apiBase, `/api/maps/${encodeURIComponent(data.mapID)}`),
+            {
+                body: JSON.stringify(data),
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                method: "PATCH",
+            },
+        );
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const saved = normalizeMap(unwrapData<Partial<MapConfig>>(await response.json()));
+        setMaps((items) => [saved, ...items.filter((item) => item.mapID !== saved.mapID)]);
+    }
+
+    async function savePlanNow(data: RoutePlan): Promise<void> {
+        const response = await fetch(
+            apiUrl(
+                apiBase,
+                `/api/maps/${encodeURIComponent(data.mapID)}/plans/${encodeURIComponent(data.planID)}`,
+            ),
+            {
+                body: JSON.stringify(data),
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                method: "PATCH",
+            },
+        );
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const saved = normalizePlan(
+            unwrapData<Partial<RoutePlan>>(await response.json()),
+            data.mapID,
+        );
+        setPlans((items) => [saved, ...items.filter((item) => item.planID !== saved.planID)]);
+    }
+
+    function createSnapshot(): EditSnapshot {
+        return {
+            autoGridAnchors: cloneJson(autoGridAnchors),
+            autoGridMaxCols,
+            autoGridMaxRows,
+            autoGridPick,
+            autoGridStartID,
+            autoGridZoneID,
+            currentPlan: currentPlan ? cloneJson(currentPlan) : null,
+            islandID,
+            islandZoneID,
+            mapConfig: cloneJson(mapConfig),
+            mode,
+            roadCursorID: roadCursorRef.current,
+            step,
+            targetIslandIDs: [...targetIslandIDs],
+            zoneDraft: cloneJson(zoneDraft),
+            zoneID,
+        };
+    }
+
+    function restoreSnapshot(snapshot: EditSnapshot): void {
+        setMapConfig(snapshot.mapConfig);
+        setCurrentPlan(snapshot.currentPlan);
+        setTargetIslandIDs(new Set(snapshot.targetIslandIDs));
+        setZoneDraft(snapshot.zoneDraft);
+        setAutoGridAnchors(snapshot.autoGridAnchors);
+        setAutoGridMaxCols(snapshot.autoGridMaxCols);
+        setAutoGridMaxRows(snapshot.autoGridMaxRows);
+        setAutoGridPick(snapshot.autoGridPick);
+        setAutoGridStartID(snapshot.autoGridStartID);
+        setAutoGridZoneID(snapshot.autoGridZoneID);
+        setIslandID(snapshot.islandID);
+        setIslandZoneID(snapshot.islandZoneID);
+        setZoneID(snapshot.zoneID);
+        setStep(snapshot.step);
+        setMode(snapshot.mode);
+        roadCursorRef.current = snapshot.roadCursorID;
+        setSelectedMarkers(new Set());
+    }
+
+    function pushHistory(snapshot = createSnapshot()): void {
+        setHistory((items) => [...items.slice(-29), snapshot]);
+        setFutureHistory([]);
+    }
+
+    function clearGeneratedPath(): void {
+        setCurrentPlan((plan) =>
+            plan?.robotPath.length
+                ? {
+                      ...plan,
+                      robotPath: [],
+                  }
+                : plan,
+        );
+    }
+
+    function updateMap(
+        mutator: (current: MapConfig) => MapConfig,
+        recordHistory = true,
+        invalidatePath = false,
+    ): void {
+        if (recordHistory) {
+            pushHistory();
+        }
+        setMapConfig((current) => mutator(normalizeMap(current)));
+        if (invalidatePath) {
+            clearGeneratedPath();
+        }
+    }
+
+    function updatePlan(mutator: (current: RoutePlan) => RoutePlan, recordHistory = true): void {
+        if (recordHistory) {
+            pushHistory();
+        }
+        setCurrentPlan((current) => (current ? mutator(current) : current));
+    }
+
+    function undoLast(): void {
+        const last = history[history.length - 1];
+        if (!last) {
+            return;
+        }
+        const current = createSnapshot();
+        restoreSnapshot(last);
+        setHistory((items) => items.slice(0, -1));
+        setFutureHistory((items) => [current, ...items.slice(0, 29)]);
+        setMessage("已撤回上一步");
+    }
+
+    function redoLast(): void {
+        const next = futureHistory[0];
+        if (!next) {
+            return;
+        }
+        const current = createSnapshot();
+        restoreSnapshot(next);
+        setFutureHistory((items) => items.slice(1));
+        setHistory((items) => [...items.slice(-29), current]);
+        setMessage("已恢复下一步");
+    }
+
+    function showClickFeedback(point: PixelPoint, label: string): void {
+        setFeedbackPoint({ ...point, label });
+        if (feedbackTimerRef.current) {
+            window.clearTimeout(feedbackTimerRef.current);
+        }
+        feedbackTimerRef.current = window.setTimeout(() => setFeedbackPoint(null), 1200);
+    }
+
+    function applyTargetSelection(next: Set<string>): void {
+        pushHistory();
+        setTargetIslandIDs(next);
+        setCurrentPlan((plan) =>
+            plan
+                ? {
+                      ...plan,
+                      robotPath: [],
+                      targetIslandIDs: [...next],
+                  }
+                : plan,
+        );
+    }
+
+    async function createNewMap(): Promise<MapConfig> {
+        const response = await fetch(apiUrl(apiBase, "/api/maps"), {
+            body: JSON.stringify({ name: `犊牛岛平面图 ${new Date().toLocaleString("zh-CN")}` }),
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const data = normalizeMap(unwrapData<Partial<MapConfig>>(await response.json()));
+        skipMapSaveRef.current = true;
+        setMapConfig(data);
+        setStep("upload");
+        setPlans([]);
+        setCurrentPlan(null);
+        setMaps((items) => [data, ...items.filter((item) => item.mapID !== data.mapID)]);
+        setMessage("新地图草稿已创建，请上传平面图");
+        return data;
+    }
+
+    async function deleteCurrentMap(): Promise<void> {
+        if (!mapConfig.mapID) {
+            return;
+        }
+        if (!window.confirm(`删除平面图「${mapConfig.name || mapConfig.mapID}」及其路线方案？`)) {
+            return;
+        }
+        const response = await fetch(
+            apiUrl(apiBase, `/api/maps/${encodeURIComponent(mapConfig.mapID)}`),
+            {
+                credentials: "same-origin",
+                method: "DELETE",
+            },
+        );
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const remaining = maps.filter((item) => item.mapID !== mapConfig.mapID);
+        setMaps(remaining);
+        setPlans([]);
+        setCurrentPlan(null);
+        setTargetIslandIDs(new Set());
+        setSelectedMarkers(new Set());
+        setHistory([]);
+        setFutureHistory([]);
+        if (remaining[0]) {
+            await loadMap(remaining[0].mapID);
+        } else {
+            skipMapSaveRef.current = true;
+            setMapConfig(DEFAULT_MAP);
+            setStep("upload");
+        }
+        setMessage("平面图已删除");
+    }
+
+    function clearIslandZones(): void {
+        if (!window.confirm("清空已标区域和当前区域草稿？投喂点会保留。")) {
+            return;
+        }
+        pushHistory();
+        setMapConfig((current) => ({
+            ...normalizeMap(current),
+            zones: [],
+        }));
+        setZoneDraft([]);
+        setAutoGridAnchors({});
+        setAutoGridPick(null);
+        setSelectedMarkers(new Set());
+        clearGeneratedPath();
+        setMessage("区域已清空，投喂点已保留");
+    }
+
+    function clearIslandPoints(): void {
+        if (!window.confirm("清空所有犊牛岛投喂点？已标区域会保留。")) {
+            return;
+        }
+        pushHistory();
+        setMapConfig((current) => ({
+            ...normalizeMap(current),
+            islands: [],
+        }));
+        setTargetIslandIDs(new Set());
+        setCurrentPlan((plan) =>
+            plan
+                ? {
+                      ...plan,
+                      robotPath: [],
+                      targetIslandIDs: [],
+                  }
+                : plan,
+        );
+        setAutoGridAnchors({});
+        setAutoGridPick(null);
+        setSelectedMarkers(new Set());
+        setMessage("投喂点已清空，区域已保留");
+    }
+
+    function clearAutoGridAnchor(): void {
+        const key = autoGridPick;
+        if (!key || !autoGridAnchors[key]) {
+            return;
+        }
+        pushHistory();
+        setAutoGridAnchors((current) => {
+            const next = { ...current };
+            delete next[key];
+            return next;
+        });
+        setMessage("当前样点已撤销，可重新点击地图标定");
+    }
+
+    function clearAutoGridAnchors(): void {
+        if (
+            !autoGridAnchors.bottomRight &&
+            !autoGridAnchors.down &&
+            !autoGridAnchors.origin &&
+            !autoGridAnchors.right
+        ) {
+            return;
+        }
+        pushHistory();
+        setAutoGridAnchors({});
+        setMessage("批量标定样点已清空");
+    }
+
+    function clearCurrentStep(): void {
+        if (step === "islands") {
+            setMessage("第三步请分别使用“清空区域”或“清空投喂点”");
+            return;
+        }
+        if (!window.confirm("清空当前步骤中的标注内容？")) {
+            return;
+        }
+        pushHistory();
+        if (step === "calibration") {
+            setMapConfig((current) => ({ ...current, calibration: null }));
+            clearGeneratedPath();
+        } else if (step === "roads") {
+            setMapConfig((current) => ({ ...current, roadGraph: { edges: [], nodes: [] } }));
+            roadCursorRef.current = null;
+            clearGeneratedPath();
+        } else if (step === "save") {
+            applyTargetSelection(new Set());
+        }
+        setSelectedMarkers(new Set());
+        setMessage("当前步骤已清空");
+    }
+
+    function clearAllAnnotations(): void {
+        if (!window.confirm("清空当前平面图的全部标定、犊牛岛、通道和可下发路径？")) {
+            return;
+        }
+        pushHistory();
+        setMapConfig((current) => ({
+            ...current,
+            calibration: null,
+            currentStep: "upload",
+            islands: [],
+            roadGraph: { edges: [], nodes: [] },
+            zones: [],
+        }));
+        setCurrentPlan((plan) =>
+            plan
+                ? {
+                      ...plan,
+                      robotPath: [],
+                      targetIslandIDs: [],
+                  }
+                : plan,
+        );
+        setStep("upload");
+        setTargetIslandIDs(new Set());
+        setZoneDraft([]);
+        setAutoGridAnchors({});
+        setAutoGridPick(null);
+        setSelectedMarkers(new Set());
+        setMessage("全部标注已清空");
+    }
+
+    async function createNewPlan(): Promise<void> {
+        if (!mapConfig.mapID) {
+            setMessage("请先创建或选择地图");
+            return;
+        }
+        const response = await fetch(
+            apiUrl(apiBase, `/api/maps/${encodeURIComponent(mapConfig.mapID)}/plans`),
+            {
+                body: JSON.stringify({
+                    feedAmount,
+                    name: `路线方案 ${new Date().toLocaleString("zh-CN")}`,
+                    robotPath: [],
+                    targetIslandIDs: [],
+                }),
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                method: "POST",
+            },
+        );
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const data = normalizePlan(
+            unwrapData<Partial<RoutePlan>>(await response.json()),
+            mapConfig.mapID,
+        );
+        skipPlanSaveRef.current = true;
+        setCurrentPlan(data);
+        setPlans((items) => [data, ...items.filter((item) => item.planID !== data.planID)]);
+        setTargetIslandIDs(new Set());
+        setMessage("新路线方案已创建");
+    }
+
+    async function uploadImage(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+        const file = event.target.files?.[0];
+        event.target.value = "";
+        if (!file) {
+            return;
+        }
+        let targetMap = mapConfig;
+        if (!targetMap.mapID) {
+            targetMap = await createNewMap();
+        }
+        const mapID = targetMap.mapID || maps[0]?.mapID;
+        if (!mapID) {
+            setMessage("地图创建失败，请重试");
+            return;
+        }
+        const data = new FormData();
+        data.append("file", file);
+        const response = await fetch(
+            apiUrl(apiBase, `/api/maps/${encodeURIComponent(mapID)}/image`),
+            {
+                body: data,
+                credentials: "same-origin",
+                method: "POST",
+            },
+        );
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const next = normalizeMap(unwrapData<Partial<MapConfig>>(await response.json()));
+        setMapConfig({ ...next, currentStep: "calibration" });
+        clearGeneratedPath();
+        setStep("calibration");
+        setImageVersion(Date.now());
+        setMessage("平面图已上传，请进行两点标定");
+    }
+
+    function viewportPoint(clientX: number, clientY: number): PixelPoint | null {
+        const viewport = viewportRef.current;
+        if (!viewport) {
+            return null;
+        }
+        const rect = viewport.getBoundingClientRect();
+        return {
+            px: (clientX - rect.left - offset.x) / zoom,
+            py: (clientY - rect.top - offset.y) / zoom,
+        };
+    }
+
+    function setStepAndSave(value: WizardStep): void {
+        if (value !== "roads") {
+            roadCursorRef.current = null;
+        }
+        dragRef.current = null;
+        setSelectionRect(null);
+        setSelectedMarkers(new Set());
+        setAutoGridPick(null);
+        setStep(value);
+        updateMap((current) => ({ ...current, currentStep: value }));
+    }
+
+    function chooseMode(nextMode: Mode): void {
+        if (!isModeAllowedForStep(nextMode, step)) {
+            setMessage("该工具只能在对应步骤中使用，请先切换到正确步骤");
+            return;
+        }
+        if (
+            step === "islands" &&
+            zoneDraft.length > 0 &&
+            nextMode !== "zone" &&
+            nextMode !== "pan" &&
+            nextMode !== "select"
+        ) {
+            setMessage("当前区域还未完成，请先点击完成区域或框选删除草稿点");
+            return;
+        }
+        dragRef.current = null;
+        setSelectionRect(null);
+        if (nextMode !== "autoGrid") {
+            setAutoGridPick(null);
+        }
+        setMode(nextMode);
+    }
+
+    function setCalibrationPoint(which: "p1" | "p2", point: PixelPoint): void {
+        const current = mapConfig.calibration || EMPTY_CALIBRATION;
+        updateMap(
+            (data) => ({
+                ...data,
+                calibration: {
+                    ...current,
+                    [which]: {
+                        ...current[which],
+                        px: Number(point.px.toFixed(1)),
+                        py: Number(point.py.toFixed(1)),
+                    },
+                },
+            }),
+            true,
+            true,
+        );
+        setCalibrationClick(which === "p1" ? "p2" : "p1");
+    }
+
+    function updateCalibrationValue(
+        which: "p1" | "p2",
+        key: "px" | "py" | "x" | "y",
+        value: number,
+    ): void {
+        const current = mapConfig.calibration || EMPTY_CALIBRATION;
+        updateMap(
+            (data) => ({
+                ...data,
+                calibration: {
+                    ...current,
+                    [which]: { ...current[which], [key]: value },
+                },
+            }),
+            true,
+            true,
+        );
+    }
+
+    function handleMapClick(point: PixelPoint): void {
+        const real = pixelToReal(point, activeCalibration);
+        if (step === "calibration" && mode === "calibrate") {
+            showClickFeedback(point, calibrationClick.toUpperCase());
+            setCalibrationPoint(calibrationClick, point);
+            return;
+        }
+        if (step === "islands" && mode === "autoGrid") {
+            setAutoGridAnchor(point, real);
+            return;
+        }
+        if (step === "islands" && mode === "zone") {
+            pushHistory();
+            clearGeneratedPath();
+            showClickFeedback(point, `区域点 ${zoneDraft.length + 1}`);
+            setZoneDraft((items) => [...items, real]);
+            return;
+        }
+        if (step === "islands" && mode === "island") {
+            if (!islandID.trim()) {
+                setMessage("请填写犊牛岛编号");
+                return;
+            }
+            const nextIsland = {
+                center: real,
+                id: islandID.trim().toUpperCase(),
+                servicePoint: real,
+                zoneID: islandZoneID.trim().toUpperCase() || "A",
+            };
+            updateMap(
+                (current) => ({
+                    ...current,
+                    islands: [
+                        ...current.islands.filter((item) => item.id !== nextIsland.id),
+                        nextIsland,
+                    ],
+                }),
+                true,
+                true,
+            );
+            showClickFeedback(point, nextIsland.id);
+            setIslandID(nextIslandID(nextIsland.id));
+            setMessage(`${nextIsland.id} 投喂点已标注`);
+            return;
+        }
+        if (step === "roads" && mode === "road") {
+            showClickFeedback(point, "通道点");
+            addRoadPoint(real);
+        }
+    }
+
+    function setAutoGridAnchor(point: PixelPoint, real: RealPoint): void {
+        if (!autoGridPick) {
+            setMessage("请先在右侧批量生成工具中选择要标定的样点");
+            return;
+        }
+        pushHistory();
+        setAutoGridAnchors((current) => ({ ...current, [autoGridPick]: real }));
+        const label = autoGridAnchorLabel(autoGridPick);
+        showClickFeedback(point, label);
+        setMessage(`${label}已标，可继续点击微调，满意后再切换下一个端点`);
+    }
+
+    function generateAutoGridIslands(): void {
+        const selectedZoneID = mapConfig.zones.some((item) => item.id === autoGridZoneID)
+            ? autoGridZoneID
+            : mapConfig.zones[0]?.id || autoGridZoneID;
+        const zone = mapConfig.zones.find((item) => item.id === selectedZoneID);
+        const origin = autoGridAnchors.origin;
+        const right = autoGridAnchors.right;
+        if (!zone || !origin || !right) {
+            setMessage("请先选择区域，并标左上端点和右上端点");
+            return;
+        }
+        const rowCount = Math.max(1, Math.floor(autoGridMaxRows));
+        const columnCount = Math.max(1, Math.floor(autoGridMaxCols));
+        const horizontalLength = distance(origin, right);
+        if (horizontalLength < 0.05) {
+            setMessage("左右端点距离太近，无法计算间距");
+            return;
+        }
+        if (rowCount > 1 && !autoGridAnchors.down) {
+            setMessage("多行生成需要标左下端点；右下端点可选");
+            return;
+        }
+        const prefix = autoGridStartID.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || zone.id;
+        const startNumber = idNumber(autoGridStartID);
+        let nextNumber = Number.isFinite(startNumber) ? startNumber : 1;
+        const created = [];
+        const topLeft = origin;
+        const topRight = right;
+        const bottomLeft = autoGridAnchors.down || origin;
+        const bottomRight =
+            autoGridAnchors.bottomRight ||
+            (autoGridAnchors.down
+                ? {
+                      x: roundMeter(autoGridAnchors.down.x + right.x - origin.x),
+                      y: roundMeter(autoGridAnchors.down.y + right.y - origin.y),
+                  }
+                : right);
+        for (let row = 0; row < rowCount; row += 1) {
+            const rowRatio = rowCount === 1 ? 0 : row / (rowCount - 1);
+            const rowStart = interpolatePoint(topLeft, bottomLeft, rowRatio);
+            const rowEnd = interpolatePoint(topRight, bottomRight, rowRatio);
+            for (let col = 0; col < columnCount; col += 1) {
+                const columnRatio = columnCount === 1 ? 0 : col / (columnCount - 1);
+                const candidate = interpolatePoint(rowStart, rowEnd, columnRatio);
+                created.push({
+                    center: candidate,
+                    id: `${prefix}${nextNumber}`,
+                    servicePoint: candidate,
+                    zoneID: zone.id,
+                });
+                nextNumber += 1;
+            }
+        }
+        applyGeneratedAutoGrid(created, prefix, zone.id);
+    }
+
+    function applyGeneratedAutoGrid(
+        created: { center: RealPoint; id: string; servicePoint: RealPoint; zoneID: string }[],
+        prefix: string,
+        zoneID: string,
+    ): void {
+        if (created.length === 0) {
+            const text = "没有生成投喂点，请检查当前区域、起始编号、行数、每行数量和端点";
+            setMessage(text);
+            window.alert(text);
+            return;
+        }
+        if (
+            !window.confirm(
+                `将覆盖 ${zoneID} 区已有 ${prefix} 编号犊牛岛，并生成 ${created.length} 个投喂点？`,
+            )
+        ) {
+            return;
+        }
+        updateMap(
+            (current) => {
+                const generatedIds = new Set(created.map((island) => island.id));
+                return {
+                    ...current,
+                    islands: [
+                        ...current.islands.filter(
+                            (island) => island.zoneID !== zoneID && !generatedIds.has(island.id),
+                        ),
+                        ...created,
+                    ],
+                };
+            },
+            true,
+            true,
+        );
+        setIslandZoneID(zoneID);
+        setIslandID(nextIslandID(created[created.length - 1].id));
+        setMode("island");
+        setMessage(`已自动生成 ${created.length} 个犊牛岛投喂点，可继续补充或进入通道路线`);
+    }
+
+    function addRoadPoint(point: RealPoint): void {
+        const graph = mapConfig.roadGraph;
+        const nearest = findNearestNode(graph, point);
+        const nearestPixel = nearest ? realToPixel(nearest, activeCalibration) : null;
+        const pointPixel = realToPixel(point, activeCalibration);
+        const reuse =
+            nearest && nearestPixel
+                ? Math.hypot(nearestPixel.px - pointPixel.px, nearestPixel.py - pointPixel.py) *
+                      zoom <
+                  14
+                : false;
+        const node: RoadNode =
+            reuse && nearest
+                ? nearest
+                : {
+                      id: `n${Date.now()}`,
+                      x: roundMeter(point.x),
+                      y: roundMeter(point.y),
+                  };
+        const previousID = roadCursorRef.current;
+        pushHistory();
+        roadCursorRef.current = node.id;
+        setMapConfig((current) => {
+            const data = normalizeMap(current);
+            const nodes = reuse ? data.roadGraph.nodes : [...data.roadGraph.nodes, node];
+            const edgeExists = data.roadGraph.edges.some(
+                (edge) =>
+                    previousID &&
+                    ((edge.from === previousID && edge.to === node.id) ||
+                        (edge.from === node.id && edge.to === previousID)),
+            );
+            const edges =
+                previousID && previousID !== node.id && !edgeExists
+                    ? [
+                          ...data.roadGraph.edges,
+                          {
+                              from: previousID,
+                              id: `e${Date.now()}`,
+                              to: node.id,
+                              type: roadEdgeType,
+                          },
+                      ]
+                    : data.roadGraph.edges;
+            return { ...data, roadGraph: { edges, nodes } };
+        });
+        clearGeneratedPath();
+    }
+
+    function handleMouseDown(event: MouseEvent<HTMLDivElement>): void {
+        event.preventDefault();
+        if (event.button !== 0 && event.button !== 2) {
+            return;
+        }
+        dragRef.current = null;
+        const point = viewportPoint(event.clientX, event.clientY);
+        if (!point) {
+            return;
+        }
+        if (mode === "select") {
+            dragRef.current = { startPx: point.px, startPy: point.py, type: "select" };
+            setSelectionRect({
+                endPx: point.px,
+                endPy: point.py,
+                startPx: point.px,
+                startPy: point.py,
+            });
+            return;
+        }
+        dragRef.current = {
+            clientX: event.clientX,
+            clientY: event.clientY,
+            moved: false,
+            startClientX: event.clientX,
+            startClientY: event.clientY,
+            startOffsetX: offset.x,
+            startOffsetY: offset.y,
+            type: "pan",
+        };
+    }
+
+    function handleMouseMove(event: MouseEvent<HTMLDivElement>): void {
+        const drag = dragRef.current;
+        if (!drag) {
+            return;
+        }
+        event.preventDefault();
+        if (drag.type === "pan" && event.buttons === 0) {
+            dragRef.current = null;
+            return;
+        }
+        if (drag.type === "select") {
+            const point = viewportPoint(event.clientX, event.clientY);
+            if (point) {
+                setSelectionRect({
+                    endPx: point.px,
+                    endPy: point.py,
+                    startPx: drag.startPx,
+                    startPy: drag.startPy,
+                });
+            }
+            return;
+        }
+        const dx = event.clientX - drag.startClientX;
+        const dy = event.clientY - drag.startClientY;
+        drag.moved = drag.moved || Math.hypot(dx, dy) > 3;
+        drag.clientX = event.clientX;
+        drag.clientY = event.clientY;
+        if (mode === "pan" || event.buttons === 2 || event.altKey) {
+            setOffset({ x: drag.startOffsetX + dx, y: drag.startOffsetY + dy });
+        }
+    }
+
+    function handleMouseUp(event: MouseEvent<HTMLDivElement>): void {
+        event.preventDefault();
+        const drag = dragRef.current;
+        dragRef.current = null;
+        const point = viewportPoint(event.clientX, event.clientY);
+        if (!drag || !point) {
+            setSelectionRect(null);
+            return;
+        }
+        if (drag.type === "select") {
+            const rect = selectionRect || {
+                endPx: point.px,
+                endPy: point.py,
+                startPx: drag.startPx,
+                startPy: drag.startPy,
+            };
+            const selected = selectMarkers(rect);
+            setSelectedMarkers(selected);
+            setMessage(
+                selected.size
+                    ? `已框选 ${selected.size} 个对象，可点击删除选中`
+                    : "框选区域内没有可删除对象",
+            );
+            setSelectionRect(null);
+            return;
+        }
+        if (!drag.moved && mode !== "pan") {
+            handleMapClick(point);
+        }
+    }
+
+    function handleMouseLeave(): void {
+        dragRef.current = null;
+        setSelectionRect(null);
+    }
+
+    function handleContextMenu(event: MouseEvent<HTMLDivElement>): void {
+        event.preventDefault();
+        const point = viewportPoint(event.clientX, event.clientY);
+        if (!point) {
+            return;
+        }
+        deleteNearest(point);
+    }
+
+    function handleWheel(event: WheelEvent<HTMLDivElement>): void {
+        event.preventDefault();
+        setOffset((current) => ({ x: current.x - event.deltaX, y: current.y - event.deltaY }));
+    }
+
+    function zoomBy(factor: number): void {
+        const viewport = viewportRef.current;
+        const nextZoom = clampZoom(zoom * factor);
+        if (!viewport || nextZoom === zoom) {
+            setZoom(nextZoom);
+            return;
+        }
+        const rect = viewport.getBoundingClientRect();
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+        const imageX = (centerX - offset.x) / zoom;
+        const imageY = (centerY - offset.y) / zoom;
+        setZoom(nextZoom);
+        setOffset({ x: centerX - imageX * nextZoom, y: centerY - imageY * nextZoom });
+    }
+
+    function selectMarkers(rect: SelectionRect): Set<string> {
+        const selected = new Set<string>();
+        if (step === "calibration" && mapConfig.calibration) {
+            (["p1", "p2"] as const).forEach((key) => {
+                const point = mapConfig.calibration?.[key];
+                if (point && pointInRect({ px: point.px, py: point.py }, rect)) {
+                    selected.add(`cal:${key}`);
+                }
+            });
+        }
+        if (step === "islands") {
+            mapConfig.islands.forEach((island) => {
+                if (pointInRect(realToPixel(island.center, activeCalibration), rect)) {
+                    selected.add(`island:${island.id}`);
+                }
+            });
+            mapConfig.zones.forEach((zone) => {
+                const center = realToPixel(polygonCenter(zone.polygon), activeCalibration);
+                if (
+                    pointInRect(center, rect) ||
+                    zone.polygon.some((point) =>
+                        pointInRect(realToPixel(point, activeCalibration), rect),
+                    )
+                ) {
+                    selected.add(`zone:${zone.id}`);
+                }
+            });
+        }
+        if (step === "roads") {
+            mapConfig.roadGraph.nodes.forEach((node) => {
+                if (pointInRect(realToPixel(node, activeCalibration), rect)) {
+                    selected.add(`node:${node.id}`);
+                }
+            });
+        }
+        return selected;
+    }
+
+    function deleteNearest(point: PixelPoint): void {
+        if (step === "calibration" && mapConfig.calibration) {
+            const entries = (["p1", "p2"] as const).map((key) => ({
+                key,
+                px: mapConfig.calibration?.[key].px || 0,
+                py: mapConfig.calibration?.[key].py || 0,
+            }));
+            const nearest = entries.reduce((best, item) =>
+                Math.hypot(item.px - point.px, item.py - point.py) <
+                Math.hypot(best.px - point.px, best.py - point.py)
+                    ? item
+                    : best,
+            );
+            if (Math.hypot(nearest.px - point.px, nearest.py - point.py) < 20 / zoom) {
+                deleteSelected(new Set([`cal:${nearest.key}`]));
+            }
+        }
+        const real = pixelToReal(point, activeCalibration);
+        if (step === "islands") {
+            const nearestIsland = mapConfig.islands.reduce<{ id: string; value: number } | null>(
+                (best, island) => {
+                    const value = distance(real, island.center);
+                    return !best || value < best.value ? { id: island.id, value } : best;
+                },
+                null,
+            );
+            if (nearestIsland && nearestIsland.value < 1.5) {
+                setSelectedMarkers(new Set([`island:${nearestIsland.id}`]));
+                deleteSelected(new Set([`island:${nearestIsland.id}`]));
+            }
+        }
+        if (step === "roads") {
+            const nearestNode = mapConfig.roadGraph.nodes.reduce<{
+                id: string;
+                value: number;
+            } | null>((best, node) => {
+                const value = distance(real, node);
+                return !best || value < best.value ? { id: node.id, value } : best;
+            }, null);
+            if (nearestNode && nearestNode.value < 1.5) {
+                deleteSelected(new Set([`node:${nearestNode.id}`]));
+                return;
+            }
+            const nodes = nodeMap(mapConfig.roadGraph);
+            const nearestEdge = mapConfig.roadGraph.edges.reduce<{
+                id: string;
+                value: number;
+            } | null>((best, edge) => {
+                const from = nodes.get(edge.from);
+                const to = nodes.get(edge.to);
+                if (!from || !to) {
+                    return best;
+                }
+                const value = lineDistance(real, from, to);
+                return !best || value < best.value ? { id: edge.id, value } : best;
+            }, null);
+            if (nearestEdge && nearestEdge.value < 1.5) {
+                updateMap(
+                    (current) => ({
+                        ...current,
+                        roadGraph: {
+                            ...current.roadGraph,
+                            edges: current.roadGraph.edges.filter(
+                                (edge) => edge.id !== nearestEdge.id,
+                            ),
+                        },
+                    }),
+                    true,
+                    true,
+                );
+            }
+        }
+    }
+
+    function deleteSelected(markers = selectedMarkers): void {
+        if (markers.size === 0) {
+            return;
+        }
+        updateMap(
+            (current) => {
+                let calibration = current.calibration;
+                if (calibration && markers.has("cal:p1")) {
+                    calibration = { ...calibration, p1: EMPTY_CALIBRATION.p1 };
+                }
+                if (calibration && markers.has("cal:p2")) {
+                    calibration = { ...calibration, p2: EMPTY_CALIBRATION.p2 };
+                }
+                const islandIds = new Set(
+                    [...markers].filter((id) => id.startsWith("island:")).map((id) => id.slice(7)),
+                );
+                const zoneIds = new Set(
+                    [...markers].filter((id) => id.startsWith("zone:")).map((id) => id.slice(5)),
+                );
+                const nodeIds = new Set(
+                    [...markers].filter((id) => id.startsWith("node:")).map((id) => id.slice(5)),
+                );
+                if (roadCursorRef.current && nodeIds.has(roadCursorRef.current)) {
+                    roadCursorRef.current = null;
+                }
+                return {
+                    ...current,
+                    calibration,
+                    islands: current.islands.filter((island) => !islandIds.has(island.id)),
+                    roadGraph: {
+                        edges: current.roadGraph.edges.filter(
+                            (edge) => !nodeIds.has(edge.from) && !nodeIds.has(edge.to),
+                        ),
+                        nodes: current.roadGraph.nodes.filter((node) => !nodeIds.has(node.id)),
+                    },
+                    zones: current.zones.filter((zone) => !zoneIds.has(zone.id)),
+                };
+            },
+            true,
+            true,
+        );
+        setSelectedMarkers(new Set());
+    }
+
+    function completeZone(): void {
+        if (zoneDraft.length < 3) {
+            setMessage("区域至少需要 3 个点");
+            return;
+        }
+        const id = zoneID.trim().toUpperCase() || "A";
+        pushHistory();
+        setMapConfig((current) => {
+            const data = normalizeMap(current);
+            return {
+                ...data,
+                zones: [
+                    ...data.zones.filter((zone) => zone.id !== id),
+                    { id, name: `${id}区`, polygon: zoneDraft },
+                ],
+            };
+        });
+        clearGeneratedPath();
+        setZoneDraft([]);
+        setZoneID(nextZoneIDValue(id));
+        setAutoGridZoneID(id);
+        setAutoGridStartID(`${id}1`);
+        setMessage(`${id}区已完成，可继续标下一区域或开始标犊牛岛投喂点`);
+    }
+
+    function selectZone(zoneIDValue: string): void {
+        const selected = mapConfig.islands
+            .filter((island) => island.zoneID === zoneIDValue)
+            .map((island) => island.id);
+        applyTargetSelection(new Set(selected));
+    }
+
+    function selectRange(): void {
+        const startZone = rangeStart.match(/^[A-Z]+/i)?.[0]?.toUpperCase();
+        const endZone = rangeEnd.match(/^[A-Z]+/i)?.[0]?.toUpperCase();
+        const start = idNumber(rangeStart);
+        const end = idNumber(rangeEnd);
+        if (
+            !startZone ||
+            startZone !== endZone ||
+            !Number.isFinite(start) ||
+            !Number.isFinite(end)
+        ) {
+            setMessage("范围格式需要类似 A1 到 A10");
+            return;
+        }
+        const min = Math.min(start, end);
+        const max = Math.max(start, end);
+        applyTargetSelection(
+            new Set(
+                mapConfig.islands
+                    .filter(
+                        (island) =>
+                            island.zoneID === startZone &&
+                            idNumber(island.id) >= min &&
+                            idNumber(island.id) <= max,
+                    )
+                    .map((island) => island.id),
+            ),
+        );
+    }
+
+    function generateAndSavePlan(): void {
+        if (!currentPlan) {
+            setMessage("请先新建或选择路线方案");
+            return;
+        }
+        const path = buildGeneratedPath(mapConfig, selectedTargetIslands, null, feedAmount);
+        const next = {
+            ...currentPlan,
+            feedAmount,
+            mapID: mapConfig.mapID,
+            robotPath: path,
+            targetIslandIDs: [...targetIslandIDs],
+        };
+        setCurrentPlan(next);
+        setMessage(
+            path.length ? `路线方案已生成 ${path.length} 个路径点` : "请先选择需要投喂的犊牛岛",
+        );
+    }
+
+    const savedZoneIDs = useMemo(
+        () => mapConfig.zones.map((zone) => zone.id).sort(),
+        [mapConfig.zones],
+    );
+
+    const stepInfo = STEPS.find((item) => item.value === step) || STEPS[0];
+
+    return (
+        <LayoutContent fixed className="h-[calc(100vh-4rem)]">
+            <div className="grid h-full grid-cols-[280px_minmax(0,1fr)_440px] bg-slate-950 text-slate-100 max-2xl:grid-cols-[240px_minmax(0,1fr)_420px] max-xl:grid-cols-1">
+                <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto border-r border-white/10 bg-slate-950 p-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                        <PanelLeftIcon className="h-4 w-4 text-cyan-300" />
+                        平面图列表
+                    </div>
+                    <button
+                        className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                        type="button"
+                        onClick={() =>
+                            void createNewMap().catch((error) => setMessage(String(error)))
+                        }
+                    >
+                        <PlusIcon className="h-4 w-4" />
+                        新增平面图
+                    </button>
+                    <div className="grid gap-2">
+                        {maps.map((item) => (
+                            <button
+                                key={item.mapID}
+                                className={`rounded-md border p-3 text-left text-sm ${
+                                    item.mapID === mapConfig.mapID
+                                        ? "border-cyan-400 bg-cyan-400 text-slate-950"
+                                        : "border-white/10 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                                }`}
+                                type="button"
+                                onClick={() =>
+                                    void loadMap(item.mapID).catch((error) =>
+                                        setMessage(String(error)),
+                                    )
+                                }
+                            >
+                                <span className="block font-medium">{item.name || item.mapID}</span>
+                                <span className="mt-1 block text-xs opacity-75">
+                                    区域 {item.zones.length} · 犊牛岛 {item.islands.length}
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+                    <div className="mt-auto grid gap-2 border-t border-white/10 pt-3">
+                        <button
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                            disabled={!mapConfig.mapID}
+                            type="button"
+                            onClick={() =>
+                                void saveMapNow(mapConfig).catch((error) =>
+                                    setMessage(String(error)),
+                                )
+                            }
+                        >
+                            <SaveIcon className="h-4 w-4" />
+                            保存当前平面图
+                        </button>
+                        <button
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400 disabled:opacity-40"
+                            disabled={!mapConfig.mapID}
+                            type="button"
+                            onClick={() =>
+                                void deleteCurrentMap().catch((error) => setMessage(String(error)))
+                            }
+                        >
+                            <Trash2Icon className="h-4 w-4" />
+                            删除当前平面图
+                        </button>
+                    </div>
+                </aside>
+                <main
+                    ref={viewportRef}
+                    className="relative min-h-[620px] overflow-hidden border-r border-white/10 bg-slate-950"
+                    onContextMenu={handleContextMenu}
+                    onMouseDown={handleMouseDown}
+                    onMouseLeave={handleMouseLeave}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onWheel={handleWheel}
+                >
+                    <div
+                        className="absolute left-4 top-4 z-20 flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 shadow-lg"
+                        onClick={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onMouseUp={(event) => event.stopPropagation()}
+                    >
+                        {MODE_OPTIONS.map((item) => {
+                            const Icon = item.icon;
+                            const disabled = !isModeAllowedForStep(item.value, step);
+                            return (
+                                <button
+                                    key={item.value}
+                                    className={`inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm disabled:cursor-not-allowed disabled:opacity-35 ${
+                                        mode === item.value
+                                            ? "bg-cyan-400 text-slate-950"
+                                            : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+                                    }`}
+                                    disabled={disabled}
+                                    title={item.label}
+                                    type="button"
+                                    onClick={() => chooseMode(item.value)}
+                                >
+                                    <Icon className="h-4 w-4" />
+                                    {item.label}
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    <div
+                        className="absolute right-4 top-4 z-20 flex items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 text-sm text-slate-300"
+                        onClick={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onMouseUp={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            className="grid h-8 w-8 place-items-center rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
+                            disabled={zoom <= MIN_ZOOM}
+                            title="缩小地图"
+                            type="button"
+                            onClick={() => zoomBy(1 / ZOOM_STEP)}
+                        >
+                            <ZoomOutIcon className="h-4 w-4" />
+                        </button>
+                        <span className="min-w-16 text-center">{(zoom * 100).toFixed(0)}%</span>
+                        <button
+                            className="grid h-8 w-8 place-items-center rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-40"
+                            disabled={zoom >= MAX_ZOOM}
+                            title="放大地图"
+                            type="button"
+                            onClick={() => zoomBy(ZOOM_STEP)}
+                        >
+                            <ZoomInIcon className="h-4 w-4" />
+                        </button>
+                    </div>
+
+                    <div
+                        className="absolute left-0 top-0 origin-top-left"
+                        style={{
+                            transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
+                        }}
+                    >
+                        {imageSrc ? (
+                            <img
+                                alt="calf island map"
+                                className="block max-w-none select-none"
+                                draggable={false}
+                                src={imageSrc}
+                                style={{ height: imageSize.height, width: imageSize.width }}
+                                onLoad={(event) =>
+                                    setImageSize({
+                                        height: event.currentTarget.naturalHeight,
+                                        width: event.currentTarget.naturalWidth,
+                                    })
+                                }
+                            />
+                        ) : (
+                            <div
+                                className="grid place-items-center border border-dashed border-slate-600 bg-slate-900 text-sm text-slate-400"
+                                style={{ height: imageSize.height, width: imageSize.width }}
+                            >
+                                上传犊牛岛区平面图
+                            </div>
+                        )}
+                        <svg
+                            className="absolute left-0 top-0 overflow-visible"
+                            height={imageSize.height}
+                            width={imageSize.width}
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <defs>
+                                <marker
+                                    id="route-direction-arrow"
+                                    markerHeight="5"
+                                    markerUnits="strokeWidth"
+                                    markerWidth="5"
+                                    orient="auto"
+                                    refX="4.5"
+                                    refY="2.5"
+                                    viewBox="0 0 5 5"
+                                >
+                                    <path d="M 0 0 L 5 2.5 L 0 5 z" fill="#2563eb" />
+                                </marker>
+                            </defs>
+                            {mapConfig.zones.map((zone) => {
+                                const points = zone.polygon.map((point) =>
+                                    realToPixel(point, activeCalibration),
+                                );
+                                return (
+                                    <g key={zone.id}>
+                                        <polygon
+                                            fill="rgba(14, 165, 233, 0.08)"
+                                            points={points
+                                                .map((point) => `${point.px},${point.py}`)
+                                                .join(" ")}
+                                            stroke={
+                                                selectedMarkers.has(`zone:${zone.id}`)
+                                                    ? "#facc15"
+                                                    : "#38bdf8"
+                                            }
+                                            strokeDasharray="8 6"
+                                            strokeWidth={2 / zoom}
+                                        />
+                                        {points[0] && (
+                                            <text
+                                                fill="#0f172a"
+                                                fontSize={18 / zoom}
+                                                fontWeight={700}
+                                                paintOrder="stroke"
+                                                stroke="#ffffff"
+                                                strokeWidth={4 / zoom}
+                                                x={points[0].px + 8 / zoom}
+                                                y={points[0].py + 20 / zoom}
+                                            >
+                                                {zone.name}
+                                            </text>
+                                        )}
+                                    </g>
+                                );
+                            })}
+                            {zoneDraft.length > 0 && (
+                                <g>
+                                    <polyline
+                                        fill="none"
+                                        points={zoneDraft
+                                            .map((point) => realToPixel(point, activeCalibration))
+                                            .map((point) => `${point.px},${point.py}`)
+                                            .join(" ")}
+                                        stroke="#facc15"
+                                        strokeDasharray="5 5"
+                                        strokeWidth={2 / zoom}
+                                    />
+                                    {zoneDraft.map((point, index) => {
+                                        const pixel = realToPixel(point, activeCalibration);
+                                        return (
+                                            <g key={`${point.x}-${point.y}-${index}`}>
+                                                <circle
+                                                    cx={pixel.px}
+                                                    cy={pixel.py}
+                                                    fill="#facc15"
+                                                    r={6 / zoom}
+                                                    stroke="#020617"
+                                                    strokeWidth={2 / zoom}
+                                                />
+                                                <text
+                                                    fill="#0f172a"
+                                                    fontSize={13 / zoom}
+                                                    fontWeight={800}
+                                                    paintOrder="stroke"
+                                                    stroke="#ffffff"
+                                                    strokeWidth={4 / zoom}
+                                                    x={pixel.px + 8 / zoom}
+                                                    y={pixel.py - 8 / zoom}
+                                                >
+                                                    区域点{index + 1}
+                                                </text>
+                                            </g>
+                                        );
+                                    })}
+                                </g>
+                            )}
+                            {mapConfig.roadGraph.edges.map((edge) => {
+                                const nodes = nodeMap(mapConfig.roadGraph);
+                                const from = nodes.get(edge.from);
+                                const to = nodes.get(edge.to);
+                                if (!from || !to) {
+                                    return null;
+                                }
+                                const fromPx = realToPixel(from, activeCalibration);
+                                const toPx = realToPixel(to, activeCalibration);
+                                return (
+                                    <line
+                                        key={edge.id}
+                                        stroke={edge.type === "main" ? "#22d3ee" : "#a78bfa"}
+                                        strokeLinecap="round"
+                                        strokeWidth={(edge.type === "main" ? 5 : 3) / zoom}
+                                        x1={fromPx.px}
+                                        x2={toPx.px}
+                                        y1={fromPx.py}
+                                        y2={toPx.py}
+                                    />
+                                );
+                            })}
+                            {mapConfig.roadGraph.nodes.map((node) => {
+                                const point = realToPixel(node, activeCalibration);
+                                return (
+                                    <circle
+                                        key={node.id}
+                                        cx={point.px}
+                                        cy={point.py}
+                                        fill={
+                                            selectedMarkers.has(`node:${node.id}`)
+                                                ? "#facc15"
+                                                : "#e0f2fe"
+                                        }
+                                        r={5 / zoom}
+                                    />
+                                );
+                            })}
+                            {mapConfig.islands.map((island) => {
+                                const center = realToPixel(island.center, activeCalibration);
+                                const selected = selectedMarkers.has(`island:${island.id}`);
+                                const target = targetIslandIDs.has(island.id);
+                                return (
+                                    <g key={island.id}>
+                                        <circle
+                                            cx={center.px}
+                                            cy={center.py}
+                                            fill={
+                                                target
+                                                    ? "#f97316"
+                                                    : selected
+                                                      ? "#facc15"
+                                                      : "#22c55e"
+                                            }
+                                            r={7 / zoom}
+                                            stroke="#020617"
+                                            strokeWidth={2 / zoom}
+                                        />
+                                        <text
+                                            fill="#0f172a"
+                                            fontSize={13 / zoom}
+                                            fontWeight={700}
+                                            paintOrder="stroke"
+                                            stroke="#ffffff"
+                                            strokeWidth={4 / zoom}
+                                            x={center.px + 9 / zoom}
+                                            y={center.py - 8 / zoom}
+                                        >
+                                            {island.id}
+                                        </text>
+                                    </g>
+                                );
+                            })}
+                            {previewPath.length > 1 && (
+                                <g>
+                                    <polyline
+                                        fill="none"
+                                        points={previewPath
+                                            .map((point) => realToPixel(point, activeCalibration))
+                                            .map((point) => `${point.px},${point.py}`)
+                                            .join(" ")}
+                                        stroke="rgba(37, 99, 235, 0.22)"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={4 / zoom}
+                                    />
+                                    {previewPath.slice(1).map((point, index) => {
+                                        const from = realToPixel(
+                                            previewPath[index],
+                                            activeCalibration,
+                                        );
+                                        const to = realToPixel(point, activeCalibration);
+                                        return (
+                                            <line
+                                                key={`${point.seq}-${index}`}
+                                                markerEnd="url(#route-direction-arrow)"
+                                                stroke="#2563eb"
+                                                strokeLinecap="round"
+                                                strokeWidth={2.5 / zoom}
+                                                x1={from.px}
+                                                x2={to.px}
+                                                y1={from.py}
+                                                y2={to.py}
+                                            />
+                                        );
+                                    })}
+                                </g>
+                            )}
+                            {mapConfig.calibration &&
+                                (["p1", "p2"] as const).map((key, index) => {
+                                    const point = mapConfig.calibration?.[key];
+                                    return point ? (
+                                        <g key={key}>
+                                            <circle
+                                                cx={point.px}
+                                                cy={point.py}
+                                                fill="#0f172a"
+                                                r={8 / zoom}
+                                                stroke={
+                                                    selectedMarkers.has(`cal:${key}`)
+                                                        ? "#f87171"
+                                                        : "#facc15"
+                                                }
+                                                strokeWidth={3 / zoom}
+                                            />
+                                            <text
+                                                fill="#facc15"
+                                                fontSize={14 / zoom}
+                                                fontWeight={700}
+                                                x={point.px + 12 / zoom}
+                                                y={point.py + 5 / zoom}
+                                            >
+                                                P{index + 1}
+                                            </text>
+                                        </g>
+                                    ) : null;
+                                })}
+                            {selectionRect && (
+                                <g>
+                                    <rect
+                                        fill="rgba(34, 211, 238, 0.18)"
+                                        height={Math.abs(
+                                            selectionRect.endPy - selectionRect.startPy,
+                                        )}
+                                        stroke="#22d3ee"
+                                        strokeDasharray="6 4"
+                                        strokeWidth={3 / zoom}
+                                        width={Math.abs(
+                                            selectionRect.endPx - selectionRect.startPx,
+                                        )}
+                                        x={Math.min(selectionRect.startPx, selectionRect.endPx)}
+                                        y={Math.min(selectionRect.startPy, selectionRect.endPy)}
+                                    />
+                                    <text
+                                        fill="#0f172a"
+                                        fontSize={13 / zoom}
+                                        fontWeight={800}
+                                        paintOrder="stroke"
+                                        stroke="#ffffff"
+                                        strokeWidth={4 / zoom}
+                                        x={
+                                            Math.min(selectionRect.startPx, selectionRect.endPx) +
+                                            8 / zoom
+                                        }
+                                        y={
+                                            Math.min(selectionRect.startPy, selectionRect.endPy) -
+                                            8 / zoom
+                                        }
+                                    >
+                                        框选删除对象
+                                    </text>
+                                </g>
+                            )}
+                            {step === "islands" &&
+                                (["origin", "right", "down", "bottomRight"] as const).map((key) => {
+                                    const realPoint = autoGridAnchors[key];
+                                    if (!realPoint) {
+                                        return null;
+                                    }
+                                    const point = realToPixel(realPoint, activeCalibration);
+                                    const label = autoGridAnchorLabel(key).replace("端点", "");
+                                    return (
+                                        <g key={key}>
+                                            <circle
+                                                cx={point.px}
+                                                cy={point.py}
+                                                fill="#f59e0b"
+                                                r={8 / zoom}
+                                                stroke="#020617"
+                                                strokeWidth={2 / zoom}
+                                            />
+                                            <text
+                                                fill="#0f172a"
+                                                fontSize={13 / zoom}
+                                                fontWeight={800}
+                                                paintOrder="stroke"
+                                                stroke="#ffffff"
+                                                strokeWidth={4 / zoom}
+                                                x={point.px + 10 / zoom}
+                                                y={point.py + 4 / zoom}
+                                            >
+                                                {label}
+                                            </text>
+                                        </g>
+                                    );
+                                })}
+                            {feedbackPoint && (
+                                <g>
+                                    <circle
+                                        cx={feedbackPoint.px}
+                                        cy={feedbackPoint.py}
+                                        fill="rgba(250, 204, 21, 0.35)"
+                                        r={18 / zoom}
+                                        stroke="#facc15"
+                                        strokeWidth={3 / zoom}
+                                    />
+                                    <circle
+                                        cx={feedbackPoint.px}
+                                        cy={feedbackPoint.py}
+                                        fill="#facc15"
+                                        r={6 / zoom}
+                                        stroke="#020617"
+                                        strokeWidth={2 / zoom}
+                                    />
+                                    <text
+                                        fill="#0f172a"
+                                        fontSize={13 / zoom}
+                                        fontWeight={700}
+                                        paintOrder="stroke"
+                                        stroke="#ffffff"
+                                        strokeWidth={4 / zoom}
+                                        x={feedbackPoint.px + 12 / zoom}
+                                        y={feedbackPoint.py - 10 / zoom}
+                                    >
+                                        {feedbackPoint.label}
+                                    </text>
+                                </g>
+                            )}
+                        </svg>
+                    </div>
+                </main>
+
+                <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-slate-900 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                        <div>
+                            <h1 className="text-lg font-semibold">路径规划</h1>
+                            <div className="mt-1 text-xs text-slate-400">
+                                只保存地图与路线方案，不下发车辆任务
+                            </div>
+                        </div>
+                        <button
+                            className="rounded-md bg-cyan-400 p-2 text-slate-950 hover:bg-cyan-300"
+                            title="刷新历史"
+                            type="button"
+                            onClick={() =>
+                                void loadMaps().catch((error) => setMessage(String(error)))
+                            }
+                        >
+                            <RefreshCwIcon className="h-4 w-4" />
+                        </button>
+                    </div>
+
+                    <section className="grid grid-cols-2 gap-2 rounded-md border border-white/10 bg-slate-950 p-3">
+                        <button
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                            disabled={history.length === 0}
+                            type="button"
+                            onClick={undoLast}
+                        >
+                            <Undo2Icon className="h-4 w-4" />
+                            撤回上一步
+                        </button>
+                        <button
+                            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                            disabled={futureHistory.length === 0}
+                            type="button"
+                            onClick={redoLast}
+                        >
+                            <Redo2Icon className="h-4 w-4" />
+                            恢复下一步
+                        </button>
+                        {step === "islands" ? (
+                            <>
+                                <button
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                                    disabled={
+                                        mapConfig.zones.length === 0 && zoneDraft.length === 0
+                                    }
+                                    type="button"
+                                    onClick={clearIslandZones}
+                                >
+                                    <EraserIcon className="h-4 w-4" />
+                                    清空区域
+                                </button>
+                                <button
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-40"
+                                    disabled={mapConfig.islands.length === 0}
+                                    type="button"
+                                    onClick={clearIslandPoints}
+                                >
+                                    <TargetIcon className="h-4 w-4" />
+                                    清空投喂点
+                                </button>
+                            </>
+                        ) : (
+                            <button
+                                className="col-span-2 inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                                type="button"
+                                onClick={clearCurrentStep}
+                            >
+                                <EraserIcon className="h-4 w-4" />
+                                清空当前步骤
+                            </button>
+                        )}
+                        <button
+                            className="col-span-2 inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400"
+                            type="button"
+                            onClick={clearAllAnnotations}
+                        >
+                            <Trash2Icon className="h-4 w-4" />
+                            一键清空全部标注
+                        </button>
+                    </section>
+
+                    <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
+                        <div className="grid grid-cols-[1fr_auto] gap-2">
+                            <select
+                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
+                                value={mapConfig.mapID}
+                                onChange={(event) =>
+                                    void loadMap(event.target.value).catch((error) =>
+                                        setMessage(String(error)),
+                                    )
+                                }
+                            >
+                                <option value="">选择历史平面图</option>
+                                {maps.map((item) => (
+                                    <option key={item.mapID} value={item.mapID}>
+                                        {item.name || item.mapID}
+                                    </option>
+                                ))}
+                            </select>
+                            <button
+                                className="inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                                type="button"
+                                onClick={() =>
+                                    void createNewMap().catch((error) => setMessage(String(error)))
+                                }
+                            >
+                                <PlusIcon className="h-4 w-4" />
+                                新建
+                            </button>
+                        </div>
+                        <input
+                            className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
+                            placeholder="地图名称"
+                            value={mapConfig.name || ""}
+                            onChange={(event) =>
+                                updateMap((current) => ({ ...current, name: event.target.value }))
+                            }
+                        />
+                        <div className="grid gap-2">
+                            <button
+                                className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                                type="button"
+                                onClick={() => fileRef.current?.click()}
+                            >
+                                <UploadIcon className="h-4 w-4" />
+                                上传图
+                            </button>
+                            <input
+                                ref={fileRef}
+                                accept="image/*"
+                                className="hidden"
+                                type="file"
+                                onChange={(event) =>
+                                    void uploadImage(event).catch((error) =>
+                                        setMessage(String(error)),
+                                    )
+                                }
+                            />
+                        </div>
+                        <div className="text-xs text-slate-400">
+                            {mapSaveStatus} · {message}
+                        </div>
+                    </section>
+
+                    <section className="grid gap-2 rounded-md border border-white/10 bg-slate-950 p-3">
+                        {STEPS.map((item, index) => (
+                            <button
+                                key={item.value}
+                                className={`flex items-start gap-3 rounded-md p-2 text-left ${step === item.value ? "bg-cyan-400 text-slate-950" : "bg-slate-900 text-slate-300 hover:bg-slate-800"}`}
+                                type="button"
+                                onClick={() => setStepAndSave(item.value)}
+                            >
+                                <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-black/20 text-xs">
+                                    {index + 1}
+                                </span>
+                                <span>
+                                    <span className="block text-sm font-medium">{item.title}</span>
+                                    <span className="block text-xs opacity-80">
+                                        {item.description}
+                                    </span>
+                                </span>
+                            </button>
+                        ))}
+                    </section>
+
+                    <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
+                        <button
+                            className="flex items-center justify-between text-left text-sm font-medium"
+                            type="button"
+                            onClick={() => setShowHelp((value) => !value)}
+                        >
+                            <span className="inline-flex items-center gap-2">
+                                <HelpCircleIcon className="h-4 w-4 text-cyan-300" />
+                                帮助
+                            </span>
+                            <span className="text-xs text-slate-400">
+                                {showHelp ? "收起" : "展开"}
+                            </span>
+                        </button>
+                        {showHelp && (
+                            <div className="grid gap-2 text-xs text-slate-400">
+                                {stepHelp(step).map((item) => (
+                                    <div key={item} className="flex gap-2">
+                                        <InfoIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-300" />
+                                        <span>{item}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </section>
+
+                    <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                            <CheckIcon className="h-4 w-4 text-cyan-300" />
+                            {stepInfo.title}
+                        </div>
+                        <p className="text-xs text-slate-400">{stepInfo.description}</p>
+                        {step === "calibration" && (
+                            <div className="grid gap-3">
+                                <p className="text-xs text-slate-500">
+                                    建议两个点尽量分布在图的对角或远距离位置；填写真实坐标时保持米制坐标方向一致。标错可右键点标记删除，或切换“框选”后删除选中。
+                                </p>
+                                {(["p1", "p2"] as const).map((key) => (
+                                    <div key={key} className="grid grid-cols-5 gap-2 text-xs">
+                                        <button
+                                            className={`rounded-md px-2 py-2 ${calibrationClick === key ? "bg-cyan-400 text-slate-950" : "bg-slate-800"}`}
+                                            type="button"
+                                            onClick={() => setCalibrationClick(key)}
+                                        >
+                                            {key.toUpperCase()}
+                                        </button>
+                                        {(["px", "py", "x", "y"] as const).map((field) => (
+                                            <input
+                                                key={field}
+                                                className="rounded-md border border-white/10 bg-slate-900 px-2 py-2"
+                                                placeholder={field}
+                                                type="number"
+                                                value={mapConfig.calibration?.[key][field] || 0}
+                                                onChange={(event) =>
+                                                    updateCalibrationValue(
+                                                        key,
+                                                        field,
+                                                        Number(event.target.value),
+                                                    )
+                                                }
+                                            />
+                                        ))}
+                                    </div>
+                                ))}
+                                <button
+                                    className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                    type="button"
+                                    onClick={() => setStepAndSave("islands")}
+                                >
+                                    标定完成，进入犊牛岛标定
+                                </button>
+                            </div>
+                        )}
+                        {step === "islands" && (
+                            <div className="grid gap-3">
+                                <p className="text-xs text-slate-500">
+                                    先用“区域”模式逐点画出 A-F
+                                    区域并点击完成区域，再用“犊牛岛”模式标出每个岛旁边的车辆投喂停靠点。
+                                </p>
+                                {mapConfig.zones.length > 0 && zoneDraft.length === 0 && (
+                                    <div className="grid gap-2 rounded-md border border-cyan-400/30 bg-cyan-400/10 p-3">
+                                        <div className="text-sm font-medium text-cyan-100">
+                                            已完成 {mapConfig.zones.length} 个区域
+                                        </div>
+                                        <div className="grid gap-2">
+                                            <button
+                                                className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                                type="button"
+                                                onClick={() => {
+                                                    setMode("island");
+                                                    setIslandZoneID(autoGridZoneID);
+                                                    setIslandID(`${autoGridZoneID}1`);
+                                                }}
+                                            >
+                                                标犊牛岛投喂点
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="grid grid-cols-3 gap-2 text-sm">
+                                    <input
+                                        className="rounded-md border border-white/10 bg-slate-900 px-2 py-2"
+                                        value={zoneID}
+                                        onChange={(event) =>
+                                            setZoneID(event.target.value.toUpperCase())
+                                        }
+                                    />
+                                    <input
+                                        className="rounded-md border border-white/10 bg-slate-900 px-2 py-2"
+                                        value={islandID}
+                                        onChange={(event) =>
+                                            setIslandID(event.target.value.toUpperCase())
+                                        }
+                                    />
+                                    <input
+                                        className="rounded-md border border-white/10 bg-slate-900 px-2 py-2"
+                                        value={islandZoneID}
+                                        onChange={(event) =>
+                                            setIslandZoneID(event.target.value.toUpperCase())
+                                        }
+                                    />
+                                </div>
+                                <button
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                                    type="button"
+                                    onClick={completeZone}
+                                >
+                                    <MapIcon className="h-4 w-4" />
+                                    完成区域
+                                </button>
+                                <div className="grid gap-3 rounded-md border border-white/10 bg-slate-900 p-3">
+                                    <div>
+                                        <div className="text-sm font-medium text-slate-100">
+                                            批量生成犊牛岛投喂点
+                                        </div>
+                                        <div className="mt-1 text-xs text-slate-500">
+                                            先标左上、右上端点并输入每行数量；多行时再标左下端点，右下端点可选。
+                                            每行数量包含左右两个端点，系统按数量减一计算间隔；当前样点可重复点击微调。
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2 text-sm">
+                                        <select
+                                            className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
+                                            disabled={savedZoneIDs.length === 0}
+                                            value={
+                                                savedZoneIDs.includes(autoGridZoneID)
+                                                    ? autoGridZoneID
+                                                    : ""
+                                            }
+                                            onChange={(event) => {
+                                                const nextZone = event.target.value;
+                                                if (!nextZone) {
+                                                    return;
+                                                }
+                                                pushHistory();
+                                                setAutoGridZoneID(nextZone);
+                                                setAutoGridStartID(`${nextZone}1`);
+                                                setAutoGridAnchors({});
+                                            }}
+                                        >
+                                            <option value="">
+                                                {savedZoneIDs.length
+                                                    ? "选择已保存区域"
+                                                    : "请先完成区域"}
+                                            </option>
+                                            {savedZoneIDs.map((zone) => (
+                                                <option key={zone} value={zone}>
+                                                    {zone}区
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <input
+                                            className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
+                                            placeholder="起始编号"
+                                            value={autoGridStartID}
+                                            onChange={(event) =>
+                                                setAutoGridStartID(event.target.value.toUpperCase())
+                                            }
+                                        />
+                                        <label className="grid gap-1 text-xs text-slate-400">
+                                            行数
+                                            <input
+                                                className="rounded-md border border-white/10 bg-slate-950 px-2 py-2 text-sm text-slate-100"
+                                                min={1}
+                                                type="number"
+                                                value={autoGridMaxRows}
+                                                onChange={(event) =>
+                                                    setAutoGridMaxRows(
+                                                        Math.max(
+                                                            1,
+                                                            Number(event.target.value) || 1,
+                                                        ),
+                                                    )
+                                                }
+                                            />
+                                        </label>
+                                        <label className="grid gap-1 text-xs text-slate-400">
+                                            每行数量
+                                            <input
+                                                className="rounded-md border border-white/10 bg-slate-950 px-2 py-2 text-sm text-slate-100"
+                                                min={1}
+                                                type="number"
+                                                value={autoGridMaxCols}
+                                                onChange={(event) =>
+                                                    setAutoGridMaxCols(
+                                                        Math.max(
+                                                            1,
+                                                            Number(event.target.value) || 1,
+                                                        ),
+                                                    )
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+                                    <div className="grid grid-cols-4 gap-2">
+                                        {[
+                                            ["origin", "左上端点"],
+                                            ["right", "右上端点"],
+                                            ["down", "左下端点"],
+                                            ["bottomRight", "右下端点"],
+                                        ].map(([value, label]) => (
+                                            <button
+                                                key={value}
+                                                className={`rounded-md px-2 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-40 ${
+                                                    autoGridPick === value
+                                                        ? "bg-cyan-400 text-slate-950"
+                                                        : "bg-slate-800 hover:bg-slate-700"
+                                                }`}
+                                                disabled={
+                                                    zoneDraft.length > 0 ||
+                                                    savedZoneIDs.length === 0
+                                                }
+                                                type="button"
+                                                onClick={() => {
+                                                    chooseMode("autoGrid");
+                                                    setAutoGridPick(value as AutoGridPick);
+                                                }}
+                                            >
+                                                {label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="text-xs text-slate-400">
+                                        左上 {autoGridAnchors.origin ? "已标" : "未标"} · 右上{" "}
+                                        {autoGridAnchors.right ? "已标" : "未标"} · 左下{" "}
+                                        {autoGridAnchors.down ? "已标" : "未标"} · 右下{" "}
+                                        {autoGridAnchors.bottomRight ? "已标" : "未标"}
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            className="rounded-md bg-slate-800 px-3 py-2 text-xs hover:bg-slate-700 disabled:opacity-40"
+                                            disabled={
+                                                !autoGridPick || !autoGridAnchors[autoGridPick]
+                                            }
+                                            type="button"
+                                            onClick={clearAutoGridAnchor}
+                                        >
+                                            撤销当前样点
+                                        </button>
+                                        <button
+                                            className="rounded-md bg-slate-800 px-3 py-2 text-xs hover:bg-slate-700 disabled:opacity-40"
+                                            disabled={
+                                                !autoGridAnchors.bottomRight &&
+                                                !autoGridAnchors.down &&
+                                                !autoGridAnchors.origin &&
+                                                !autoGridAnchors.right
+                                            }
+                                            type="button"
+                                            onClick={clearAutoGridAnchors}
+                                        >
+                                            清空样点
+                                        </button>
+                                    </div>
+                                    <button
+                                        className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-40"
+                                        disabled={
+                                            savedZoneIDs.length === 0 ||
+                                            !autoGridAnchors.origin ||
+                                            !autoGridAnchors.right ||
+                                            (autoGridMaxRows > 1 && !autoGridAnchors.down)
+                                        }
+                                        type="button"
+                                        onClick={generateAutoGridIslands}
+                                    >
+                                        生成本区域投喂点
+                                    </button>
+                                </div>
+                                <button
+                                    className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                    type="button"
+                                    onClick={() => setStepAndSave("roads")}
+                                >
+                                    进入通道路线标定
+                                </button>
+                            </div>
+                        )}
+                        {step === "roads" && (
+                            <div className="grid gap-3">
+                                <p className="text-xs text-slate-500">
+                                    沿通道中心线按顺序点击节点，系统会自动连线；点击“断开连线”后可从新的通道段开始。右键节点或边可删除。
+                                </p>
+                                {mode !== "road" && (
+                                    <button
+                                        className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                        type="button"
+                                        onClick={() => setMode("road")}
+                                    >
+                                        继续标定通道路线
+                                    </button>
+                                )}
+                                <select
+                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
+                                    value={roadEdgeType}
+                                    onChange={(event) =>
+                                        setRoadEdgeType(event.target.value as "inner" | "main")
+                                    }
+                                >
+                                    <option value="main">主通道</option>
+                                    <option value="inner">内部通道</option>
+                                </select>
+                                <button
+                                    className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                                    type="button"
+                                    onClick={() => (roadCursorRef.current = null)}
+                                >
+                                    断开连线
+                                </button>
+                                <button
+                                    className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                    type="button"
+                                    onClick={() => setStepAndSave("save")}
+                                >
+                                    进入保存方案
+                                </button>
+                            </div>
+                        )}
+                        {step === "save" && (
+                            <div className="grid gap-3">
+                                <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+                                    可下发路径是投喂任务页能够直接下发给板卡的路径点列表。选择目标犊牛岛后点击“生成可下发路径”，目标岛或投喂量变化后需要重新生成。
+                                </div>
+                                <div className="grid grid-cols-[1fr_auto] gap-2">
+                                    <select
+                                        className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
+                                        value={currentPlan?.planID || ""}
+                                        onChange={(event) => {
+                                            const plan =
+                                                plans.find(
+                                                    (item) => item.planID === event.target.value,
+                                                ) || null;
+                                            skipPlanSaveRef.current = true;
+                                            setCurrentPlan(plan);
+                                            setTargetIslandIDs(
+                                                new Set(plan?.targetIslandIDs || []),
+                                            );
+                                        }}
+                                    >
+                                        <option value="">选择历史路线方案</option>
+                                        {plans.map((plan) => (
+                                            <option key={plan.planID} value={plan.planID}>
+                                                {plan.name || plan.planID}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <button
+                                        className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                                        type="button"
+                                        onClick={() =>
+                                            void createNewPlan().catch((error) =>
+                                                setMessage(String(error)),
+                                            )
+                                        }
+                                    >
+                                        新建方案
+                                    </button>
+                                </div>
+                                <input
+                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
+                                    placeholder="路线方案名称"
+                                    value={currentPlan?.name || ""}
+                                    onChange={(event) =>
+                                        updatePlan((plan) => ({
+                                            ...plan,
+                                            name: event.target.value,
+                                        }))
+                                    }
+                                />
+                                <div className="grid grid-cols-2 gap-2 text-sm">
+                                    <input
+                                        className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
+                                        type="number"
+                                        value={feedAmount}
+                                        onChange={(event) => {
+                                            const nextAmount = Number(event.target.value) || 0;
+                                            setFeedAmount(nextAmount);
+                                            updatePlan((plan) => ({
+                                                ...plan,
+                                                feedAmount: nextAmount,
+                                                robotPath: [],
+                                            }));
+                                        }}
+                                    />
+                                    <button
+                                        className="rounded-md bg-slate-800 px-3 py-2 hover:bg-slate-700"
+                                        type="button"
+                                        onClick={selectRange}
+                                    >
+                                        选择范围
+                                    </button>
+                                    <input
+                                        className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
+                                        value={rangeStart}
+                                        onChange={(event) =>
+                                            setRangeStart(event.target.value.toUpperCase())
+                                        }
+                                    />
+                                    <input
+                                        className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
+                                        value={rangeEnd}
+                                        onChange={(event) =>
+                                            setRangeEnd(event.target.value.toUpperCase())
+                                        }
+                                    />
+                                </div>
+                                <select
+                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm disabled:opacity-40"
+                                    disabled={savedZoneIDs.length === 0}
+                                    value=""
+                                    onChange={(event) => {
+                                        if (event.target.value) {
+                                            selectZone(event.target.value);
+                                        }
+                                    }}
+                                >
+                                    <option value="">
+                                        {savedZoneIDs.length ? "选择某个区域全部" : "请先保存区域"}
+                                    </option>
+                                    {savedZoneIDs.map((zone) => (
+                                        <option key={zone} value={zone}>
+                                            {zone}区全部
+                                        </option>
+                                    ))}
+                                </select>
+                                <div className="max-h-24 overflow-auto rounded-md bg-slate-900 p-2">
+                                    <div className="flex flex-wrap gap-2">
+                                        {mapConfig.islands.map((island) => (
+                                            <button
+                                                key={island.id}
+                                                className={`rounded-md px-2 py-1 text-xs ${targetIslandIDs.has(island.id) ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-300"}`}
+                                                type="button"
+                                                onClick={() => {
+                                                    const next = new Set(targetIslandIDs);
+                                                    if (next.has(island.id)) {
+                                                        next.delete(island.id);
+                                                    } else {
+                                                        next.add(island.id);
+                                                    }
+                                                    applyTargetSelection(next);
+                                                }}
+                                            >
+                                                {island.id}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <button
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
+                                    disabled={!currentPlan || targetIslandIDs.size === 0}
+                                    type="button"
+                                    onClick={generateAndSavePlan}
+                                >
+                                    <RouteIcon className="h-4 w-4" />
+                                    生成可下发路径
+                                </button>
+                                <div className="text-xs text-slate-400">
+                                    {planSaveStatus} ·{" "}
+                                    {isPathReady
+                                        ? `可下发路径已生成，路径点 ${previewPath.length}`
+                                        : targetIslandIDs.size
+                                          ? "目标已选择，请生成可下发路径"
+                                          : "请选择目标犊牛岛"}
+                                </div>
+                            </div>
+                        )}
+                        {selectedMarkers.size > 0 && (
+                            <div className="grid gap-2 rounded-md border border-cyan-400/30 bg-cyan-400/10 p-3">
+                                <div className="text-xs text-cyan-100">
+                                    已框选 {selectedMarkers.size} 个对象，可批量删除。
+                                </div>
+                                <button
+                                    className="inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-sm font-medium text-white hover:bg-rose-400"
+                                    type="button"
+                                    onClick={() => deleteSelected()}
+                                >
+                                    <Trash2Icon className="h-4 w-4" />
+                                    删除选中 {selectedMarkers.size}
+                                </button>
+                            </div>
+                        )}
+                    </section>
+
+                    <section className="grid gap-2 rounded-md border border-white/10 bg-slate-950 p-3 text-xs text-slate-400">
+                        <div className="flex items-center gap-2 text-sm font-medium text-slate-200">
+                            <SaveIcon className="h-4 w-4 text-cyan-300" />
+                            当前统计
+                        </div>
+                        <div>
+                            区域 {mapConfig.zones.length} · 犊牛岛 {mapConfig.islands.length} ·
+                            通道节点 {mapConfig.roadGraph.nodes.length} · 通道边{" "}
+                            {mapConfig.roadGraph.edges.length}
+                        </div>
+                        <div>
+                            目标岛 {targetIslandIDs.size} · 当前方案 {currentPlan?.name || "-"}
+                        </div>
+                    </section>
+                </aside>
+            </div>
+        </LayoutContent>
+    );
+};

@@ -16,8 +16,11 @@ import { PageLayout } from "@/components/layout/page.layout.tsx";
 import { AuditsPage } from "@/pages/audits.page.tsx";
 import { DashboardPage } from "@/pages/dashboard.page.tsx";
 import { Error403 } from "@/pages/error/403.tsx";
+import { FeedingTasksPage } from "@/pages/feeding-tasks.page.tsx";
+import { LiveViewerPage } from "@/pages/live-viewer.page.tsx";
 import { LoginPage } from "@/pages/login.page.tsx";
 import { PermissionsPage } from "@/pages/permissions.page.tsx";
+import { RoutePlannerPage } from "@/pages/route-planner.page.tsx";
 import { RolesPage } from "@/pages/roles.page.tsx";
 import { SettingsCredentialPage } from "@/pages/settings/settings.credential.page.tsx";
 import { SettingsLayout } from "@/pages/settings/settings.layout.tsx";
@@ -48,6 +51,9 @@ export const ROUTES: CondRouteDef[] = [
         ],
       },
       cond("/dashboard", or(isAdmin(), hasAuthority(Authority.MENU_DASHBOARD)), <DashboardPage />),
+      cond("/route-planner", isAuthed(), <RoutePlannerPage />),
+      cond("/feeding-tasks", isAuthed(), <FeedingTasksPage />),
+      cond("/live-viewer", isAuthed(), <LiveViewerPage />),
       cond("/audits", hasAuthority(Authority.MENU_AUDITS), <AuditsPage />),
       cond("/users", hasAuthority(Authority.MENU_USERS), <UsersPage />),
       cond("/roles", hasAuthority(Authority.MENU_ROLES), <RolesPage />),
