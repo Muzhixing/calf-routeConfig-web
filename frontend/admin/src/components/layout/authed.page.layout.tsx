@@ -6,35 +6,35 @@ import { LanguageSwitch } from "@/components/layout/language.switch.tsx";
 import { UserNav } from "@/components/layout/user.nav.tsx";
 import { SidebarProvider } from "@/components/shadcn/sidebar";
 import { AppSidebar } from "@/components/sidebar/app.sidebar";
-import { ThemeCustomizer } from "@/components/theme/theme.customizer.tsx";
-import { GithubLink } from "@/components/ui/github.link.tsx";
 
 export const AuthedPageLayout: FC = () => {
-  return (
-    <SidebarProvider>
-      <AppSidebar className="z-20" />
-      <div
-        id="content"
-        className={cn(
-          "max-w-full w-full ml-auto",
-          "peer-data-[state=collapsed]:w-[calc(100%-var(--sidebar-width-icon))]",
-          "peer-data-[state=expanded]:w-[calc(100%-var(--sidebar-width))]",
-          "transition-[width] ease-linear duration-200",
-          "h-svh flex flex-col",
-          "group-data-[scroll-locked=1]/body:h-full",
-          "group-data-[scroll-locked=1]/body:has-[main.fixed-main]:h-svh",
-        )}
-      >
-        <Header fixed>
-          <div className="ml-auto flex items-center space-x-4">
-            <ThemeCustomizer />
-            <LanguageSwitch />
-            <GithubLink />
-            <UserNav />
-          </div>
-        </Header>
-        <Outlet />
-      </div>
-    </SidebarProvider>
-  );
+    return (
+        <SidebarProvider>
+            <AppSidebar className="z-20" />
+            <div
+                id="content"
+                className={cn(
+                    "max-w-full w-full ml-auto",
+                    "peer-data-[state=collapsed]:w-[calc(100%-var(--sidebar-width-icon))]",
+                    "peer-data-[state=expanded]:w-[calc(100%-var(--sidebar-width))]",
+                    "transition-[width] ease-linear duration-200",
+                    "h-svh flex flex-col",
+                    "bg-[#f5f7f8]",
+                    "group-data-[scroll-locked=1]/body:h-full",
+                    "group-data-[scroll-locked=1]/body:has-[main.fixed-main]:h-svh",
+                )}
+            >
+                <Header fixed>
+                    <div className="ml-auto flex items-center gap-3">
+                        <div className="hidden rounded-md border border-[#d8dee6] bg-white px-3 py-1.5 text-xs text-[#687589] md:block">
+                            5173 统一入口
+                        </div>
+                        <LanguageSwitch />
+                        <UserNav />
+                    </div>
+                </Header>
+                <Outlet />
+            </div>
+        </SidebarProvider>
+    );
 };

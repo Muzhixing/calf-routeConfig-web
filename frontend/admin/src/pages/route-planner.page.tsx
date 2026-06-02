@@ -1573,7 +1573,7 @@ export const RoutePlannerPage: FC = () => {
 
     return (
         <LayoutContent fixed className="h-[calc(100vh-4rem)]">
-            <div className="grid h-full grid-cols-[280px_minmax(0,1fr)_440px] bg-slate-950 text-slate-100 max-2xl:grid-cols-[240px_minmax(0,1fr)_420px] max-xl:grid-cols-1">
+            <div className="ops-workspace grid h-full grid-cols-[260px_minmax(0,1fr)_400px] text-slate-100 max-2xl:grid-cols-[240px_minmax(0,1fr)_380px] max-xl:grid-cols-1">
                 <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto border-r border-white/10 bg-slate-950 p-3">
                     <div className="flex items-center gap-2 text-sm font-semibold">
                         <PanelLeftIcon className="h-4 w-4 text-cyan-300" />
@@ -1641,7 +1641,7 @@ export const RoutePlannerPage: FC = () => {
                 </aside>
                 <main
                     ref={viewportRef}
-                    className="relative min-h-[620px] overflow-hidden border-r border-white/10 bg-slate-950"
+                    className="ops-map-surface relative min-h-[620px] overflow-hidden border-r border-white/10 bg-slate-950"
                     onContextMenu={handleContextMenu}
                     onMouseDown={handleMouseDown}
                     onMouseLeave={handleMouseLeave}
@@ -1650,7 +1650,7 @@ export const RoutePlannerPage: FC = () => {
                     onWheel={handleWheel}
                 >
                     <div
-                        className="absolute left-4 top-4 z-20 flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 shadow-lg"
+                        className="ops-toolbar absolute left-4 top-4 z-20 flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2"
                         onClick={(event) => event.stopPropagation()}
                         onMouseDown={(event) => event.stopPropagation()}
                         onMouseUp={(event) => event.stopPropagation()}
@@ -1679,7 +1679,7 @@ export const RoutePlannerPage: FC = () => {
                     </div>
 
                     <div
-                        className="absolute right-4 top-4 z-20 flex items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 text-sm text-slate-300"
+                        className="ops-toolbar absolute right-4 top-4 z-20 flex items-center gap-2 rounded-md border border-white/10 bg-slate-900/90 p-2 text-sm text-slate-300"
                         onClick={(event) => event.stopPropagation()}
                         onMouseDown={(event) => event.stopPropagation()}
                         onMouseUp={(event) => event.stopPropagation()}
@@ -2340,6 +2340,7 @@ export const RoutePlannerPage: FC = () => {
                                 <div className="grid grid-cols-3 gap-2 text-sm">
                                     <input
                                         className="rounded-md border border-white/10 bg-slate-900 px-2 py-2"
+                                        placeholder="区域ID"
                                         value={zoneID}
                                         onChange={(event) =>
                                             setZoneID(event.target.value.toUpperCase())
@@ -2347,6 +2348,7 @@ export const RoutePlannerPage: FC = () => {
                                     />
                                     <input
                                         className="rounded-md border border-white/10 bg-slate-900 px-2 py-2"
+                                        placeholder="投喂点ID"
                                         value={islandID}
                                         onChange={(event) =>
                                             setIslandID(event.target.value.toUpperCase())
@@ -2354,6 +2356,7 @@ export const RoutePlannerPage: FC = () => {
                                     />
                                     <input
                                         className="rounded-md border border-white/10 bg-slate-900 px-2 py-2"
+                                        placeholder="所属区域"
                                         value={islandZoneID}
                                         onChange={(event) =>
                                             setIslandZoneID(event.target.value.toUpperCase())

@@ -166,9 +166,9 @@ export const FeedingTasksPage: FC = () => {
 
     return (
         <LayoutContent fixed className="h-[calc(100vh-4rem)]">
-            <div className="grid h-full grid-cols-[minmax(0,1fr)_420px] bg-slate-950 text-slate-100 max-xl:grid-cols-1">
-                <main className="relative min-h-[620px] overflow-hidden border-r border-white/10 bg-slate-950">
-                    <div className="absolute left-4 top-4 z-20 rounded-md border border-white/10 bg-slate-900/90 px-3 py-2 text-sm">
+            <div className="ops-workspace grid h-full grid-cols-[minmax(0,1fr)_400px] text-slate-100 max-xl:grid-cols-1">
+                <main className="ops-map-surface relative min-h-[620px] overflow-hidden border-r border-white/10 bg-slate-950">
+                    <div className="ops-toolbar absolute left-4 top-4 z-20 rounded-md border border-white/10 bg-slate-900/90 px-3 py-2 text-sm">
                         路径点 {previewPath.length} · 目标岛{" "}
                         {currentPlan?.targetIslandIDs.length || 0}
                     </div>
@@ -244,9 +244,12 @@ export const FeedingTasksPage: FC = () => {
                                                 strokeWidth={2}
                                             />
                                             <text
-                                                fill="#f8fafc"
+                                                fill="#0f172a"
                                                 fontSize={14}
                                                 fontWeight={700}
+                                                paintOrder="stroke"
+                                                stroke="#ffffff"
+                                                strokeWidth={4}
                                                 x={center.px + 10}
                                                 y={center.py - 8}
                                             >
@@ -288,8 +291,12 @@ export const FeedingTasksPage: FC = () => {
                                                 strokeWidth={2}
                                             />
                                             <text
-                                                fill="#f8fafc"
+                                                fill="#0f172a"
                                                 fontSize={13}
+                                                fontWeight={700}
+                                                paintOrder="stroke"
+                                                stroke="#ffffff"
+                                                strokeWidth={4}
                                                 x={point.px + 12}
                                                 y={point.py + 4}
                                             >
@@ -324,14 +331,6 @@ export const FeedingTasksPage: FC = () => {
                     </div>
 
                     <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
-                        <label className="grid gap-1 text-sm">
-                            <span className="text-xs text-slate-500">API Base</span>
-                            <input
-                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
-                                value={apiBase}
-                                onChange={(event) => setApiBase(event.target.value)}
-                            />
-                        </label>
                         <label className="grid gap-1 text-sm">
                             <span className="text-xs text-slate-500">地图</span>
                             <select
@@ -372,6 +371,19 @@ export const FeedingTasksPage: FC = () => {
                                 ))}
                             </select>
                         </label>
+                        <details className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm">
+                            <summary className="cursor-pointer text-xs font-medium text-slate-500">
+                                高级接口设置
+                            </summary>
+                            <label className="mt-3 grid gap-1">
+                                <span className="text-xs text-slate-500">API Base</span>
+                                <input
+                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
+                                    value={apiBase}
+                                    onChange={(event) => setApiBase(event.target.value)}
+                                />
+                            </label>
+                        </details>
                     </section>
 
                     <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
@@ -380,23 +392,34 @@ export const FeedingTasksPage: FC = () => {
                             车辆与投喂
                         </div>
                         <div className="grid grid-cols-2 gap-2">
-                            <input
-                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                                value={deviceID}
-                                onChange={(event) => setDeviceID(event.target.value)}
-                            />
-                            <input
-                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                                type="number"
-                                value={feedAmount}
-                                onChange={(event) => setFeedAmount(Number(event.target.value) || 0)}
-                            />
+                            <label className="grid gap-1 text-xs text-slate-500">
+                                车辆 ID
+                                <input
+                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
+                                    value={deviceID}
+                                    onChange={(event) => setDeviceID(event.target.value)}
+                                />
+                            </label>
+                            <label className="grid gap-1 text-xs text-slate-500">
+                                投喂量 ml
+                                <input
+                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
+                                    type="number"
+                                    value={feedAmount}
+                                    onChange={(event) =>
+                                        setFeedAmount(Number(event.target.value) || 0)
+                                    }
+                                />
+                            </label>
                         </div>
-                        <input
-                            className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                            value={taskName}
-                            onChange={(event) => setTaskName(event.target.value)}
-                        />
+                        <label className="grid gap-1 text-xs text-slate-500">
+                            任务名称
+                            <input
+                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
+                                value={taskName}
+                                onChange={(event) => setTaskName(event.target.value)}
+                            />
+                        </label>
                         <button
                             className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
                             type="button"
