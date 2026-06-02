@@ -110,9 +110,10 @@ type FeedbackPoint = PixelPoint & {
     label: string;
 };
 
-type AutoGridPick = "down" | "origin" | "right" | null;
+type AutoGridPick = "bottomRight" | "down" | "origin" | "right" | null;
 
 type AutoGridAnchors = {
+    bottomRight?: RealPoint;
     down?: RealPoint;
     origin?: RealPoint;
     right?: RealPoint;
@@ -201,39 +202,24 @@ function nextZoneIDValue(id: string): string {
     return id;
 }
 
-function pointInPolygon(point: RealPoint, polygon: RealPoint[]): boolean {
-    if (polygon.length < 3) {
-        return false;
+function autoGridAnchorLabel(key: Exclude<AutoGridPick, null>): string {
+    if (key === "origin") {
+        return "左上端点";
     }
-    let inside = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-        const a = polygon[i];
-        const b = polygon[j];
-        const intersects =
-            a.y > point.y !== b.y > point.y &&
-            point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y || 0.000001) + a.x;
-        if (intersects) {
-            inside = !inside;
-        }
+    if (key === "right") {
+        return "右上端点";
     }
-    return inside;
+    if (key === "down") {
+        return "左下端点";
+    }
+    return "右下端点";
 }
 
-function pointInZoneGenerationArea(
-    point: RealPoint,
-    polygon: RealPoint[],
-    tolerance: number,
-): boolean {
-    if (pointInPolygon(point, polygon)) {
-        return true;
-    }
-    const xs = polygon.map((item) => item.x);
-    const ys = polygon.map((item) => item.y);
-    const minX = Math.min(...xs) - tolerance;
-    const maxX = Math.max(...xs) + tolerance;
-    const minY = Math.min(...ys) - tolerance;
-    const maxY = Math.max(...ys) + tolerance;
-    return point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY;
+function interpolatePoint(start: RealPoint, end: RealPoint, ratio: number): RealPoint {
+    return {
+        x: roundMeter(start.x + (end.x - start.x) * ratio),
+        y: roundMeter(start.y + (end.y - start.y) * ratio),
+    };
 }
 
 function polygonCenter(points: RealPoint[]): RealPoint {
@@ -279,7 +265,7 @@ function stepHelp(step: WizardStep): string[] {
         return [
             "区域模式逐点画 A-F 区域，点击完成区域保存。",
             "犊牛岛模式标的是车辆给该岛投喂时的停靠点，一个点就是一个犊牛岛。",
-            "批量生成工具用左上、右邻、可选下邻样点自动生成区域内投喂点；同一样点可反复点击微调。",
+            "批量生成工具用左右端点和数量均分投喂点；多行时补充左下端点，右下端点可选。",
         ];
     }
     if (step === "roads") {
@@ -782,7 +768,12 @@ export const RoutePlannerPage: FC = () => {
     }
 
     function clearAutoGridAnchors(): void {
-        if (!autoGridAnchors.origin && !autoGridAnchors.right && !autoGridAnchors.down) {
+        if (
+            !autoGridAnchors.bottomRight &&
+            !autoGridAnchors.down &&
+            !autoGridAnchors.origin &&
+            !autoGridAnchors.right
+        ) {
             return;
         }
         pushHistory();
@@ -1057,21 +1048,9 @@ export const RoutePlannerPage: FC = () => {
         }
         pushHistory();
         setAutoGridAnchors((current) => ({ ...current, [autoGridPick]: real }));
-        showClickFeedback(
-            point,
-            autoGridPick === "origin"
-                ? "左上起点"
-                : autoGridPick === "right"
-                  ? "右侧相邻点"
-                  : "下方相邻点",
-        );
-        setMessage(
-            autoGridPick === "origin"
-                ? "左上起点已标，可继续点击微调，满意后再点右侧相邻"
-                : autoGridPick === "right"
-                  ? "右侧相邻点已标，可继续点击微调，满意后可标下方相邻或直接生成"
-                  : "下方相邻点已标，可继续点击微调或生成本区域投喂点",
-        );
+        const label = autoGridAnchorLabel(autoGridPick);
+        showClickFeedback(point, label);
+        setMessage(`${label}已标，可继续点击微调，满意后再切换下一个端点`);
     }
 
     function generateAutoGridIslands(): void {
@@ -1082,47 +1061,42 @@ export const RoutePlannerPage: FC = () => {
         const origin = autoGridAnchors.origin;
         const right = autoGridAnchors.right;
         if (!zone || !origin || !right) {
-            setMessage("请先选择区域，并标左上起点和右侧相邻投喂点");
+            setMessage("请先选择区域，并标左上端点和右上端点");
             return;
         }
-        const horizontal = { x: right.x - origin.x, y: right.y - origin.y };
+        const rowCount = Math.max(1, Math.floor(autoGridMaxRows));
+        const columnCount = Math.max(1, Math.floor(autoGridMaxCols));
         const horizontalLength = distance(origin, right);
         if (horizontalLength < 0.05) {
-            setMessage("两个样点距离太近，无法计算间距");
+            setMessage("左右端点距离太近，无法计算间距");
             return;
         }
-        const down = autoGridAnchors.down || {
-            x: origin.x,
-            y: origin.y + horizontalLength,
-        };
-        const vertical = { x: down.x - origin.x, y: down.y - origin.y };
-        const verticalLength = Math.hypot(vertical.x, vertical.y);
-        if (verticalLength < 0.05) {
-            setMessage("纵向间距太小，无法生成");
+        if (rowCount > 1 && !autoGridAnchors.down) {
+            setMessage("多行生成需要标左下端点；右下端点可选");
             return;
         }
         const prefix = autoGridStartID.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || zone.id;
         const startNumber = idNumber(autoGridStartID);
         let nextNumber = Number.isFinite(startNumber) ? startNumber : 1;
         const created = [];
-        const boundaryTolerance = Math.max(horizontalLength, verticalLength) * 0.75;
-        let emptyRowsAfterGenerated = 0;
-        for (let row = 0; row < autoGridMaxRows; row += 1) {
-            let rowHasIsland = false;
-            let rowEnteredArea = false;
-            for (let col = 0; col < autoGridMaxCols; col += 1) {
-                const candidate = {
-                    x: roundMeter(origin.x + horizontal.x * col + vertical.x * row),
-                    y: roundMeter(origin.y + horizontal.y * col + vertical.y * row),
-                };
-                if (!pointInZoneGenerationArea(candidate, zone.polygon, boundaryTolerance)) {
-                    if (rowEnteredArea) {
-                        break;
-                    }
-                    continue;
-                }
-                rowEnteredArea = true;
-                rowHasIsland = true;
+        const topLeft = origin;
+        const topRight = right;
+        const bottomLeft = autoGridAnchors.down || origin;
+        const bottomRight =
+            autoGridAnchors.bottomRight ||
+            (autoGridAnchors.down
+                ? {
+                      x: roundMeter(autoGridAnchors.down.x + right.x - origin.x),
+                      y: roundMeter(autoGridAnchors.down.y + right.y - origin.y),
+                  }
+                : right);
+        for (let row = 0; row < rowCount; row += 1) {
+            const rowRatio = rowCount === 1 ? 0 : row / (rowCount - 1);
+            const rowStart = interpolatePoint(topLeft, bottomLeft, rowRatio);
+            const rowEnd = interpolatePoint(topRight, bottomRight, rowRatio);
+            for (let col = 0; col < columnCount; col += 1) {
+                const columnRatio = columnCount === 1 ? 0 : col / (columnCount - 1);
+                const candidate = interpolatePoint(rowStart, rowEnd, columnRatio);
                 created.push({
                     center: candidate,
                     id: `${prefix}${nextNumber}`,
@@ -1130,16 +1104,6 @@ export const RoutePlannerPage: FC = () => {
                     zoneID: zone.id,
                 });
                 nextNumber += 1;
-            }
-            if (rowHasIsland) {
-                emptyRowsAfterGenerated = 0;
-                continue;
-            }
-            if (created.length > 0) {
-                emptyRowsAfterGenerated += 1;
-            }
-            if (emptyRowsAfterGenerated >= 2) {
-                break;
             }
         }
         applyGeneratedAutoGrid(created, prefix, zone.id);
@@ -1151,7 +1115,7 @@ export const RoutePlannerPage: FC = () => {
         zoneID: string,
     ): void {
         if (created.length === 0) {
-            const text = "没有生成投喂点，请检查当前区域、起始编号和三个样点是否对应同一区域";
+            const text = "没有生成投喂点，请检查当前区域、起始编号、行数、每行数量和端点";
             setMessage(text);
             window.alert(text);
             return;
@@ -2040,17 +2004,13 @@ export const RoutePlannerPage: FC = () => {
                                 </g>
                             )}
                             {step === "islands" &&
-                                Object.entries(autoGridAnchors).map(([key, realPoint]) => {
+                                (["origin", "right", "down", "bottomRight"] as const).map((key) => {
+                                    const realPoint = autoGridAnchors[key];
                                     if (!realPoint) {
                                         return null;
                                     }
                                     const point = realToPixel(realPoint, activeCalibration);
-                                    const label =
-                                        key === "origin"
-                                            ? "左上"
-                                            : key === "right"
-                                              ? "右邻"
-                                              : "下邻";
+                                    const label = autoGridAnchorLabel(key).replace("端点", "");
                                     return (
                                         <g key={key}>
                                             <circle
@@ -2414,8 +2374,8 @@ export const RoutePlannerPage: FC = () => {
                                             批量生成犊牛岛投喂点
                                         </div>
                                         <div className="mt-1 text-xs text-slate-500">
-                                            先点区域内最左上投喂点和右侧相邻投喂点；下方相邻点可选，不标时默认用相同间距向下生成。
-                                            当前样点会保持选中，可重复点击微调，满意后再切换下一个样点。
+                                            先标左上、右上端点并输入每行数量；多行时再标左下端点，右下端点可选。
+                                            每行数量包含左右两个端点，系统按数量减一计算间隔；当前样点可重复点击微调。
                                         </div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-2 text-sm">
@@ -2451,39 +2411,53 @@ export const RoutePlannerPage: FC = () => {
                                         </select>
                                         <input
                                             className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
+                                            placeholder="起始编号"
                                             value={autoGridStartID}
                                             onChange={(event) =>
                                                 setAutoGridStartID(event.target.value.toUpperCase())
                                             }
                                         />
-                                        <input
-                                            className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
-                                            min={1}
-                                            type="number"
-                                            value={autoGridMaxRows}
-                                            onChange={(event) =>
-                                                setAutoGridMaxRows(
-                                                    Math.max(1, Number(event.target.value) || 1),
-                                                )
-                                            }
-                                        />
-                                        <input
-                                            className="rounded-md border border-white/10 bg-slate-950 px-2 py-2"
-                                            min={1}
-                                            type="number"
-                                            value={autoGridMaxCols}
-                                            onChange={(event) =>
-                                                setAutoGridMaxCols(
-                                                    Math.max(1, Number(event.target.value) || 1),
-                                                )
-                                            }
-                                        />
+                                        <label className="grid gap-1 text-xs text-slate-400">
+                                            行数
+                                            <input
+                                                className="rounded-md border border-white/10 bg-slate-950 px-2 py-2 text-sm text-slate-100"
+                                                min={1}
+                                                type="number"
+                                                value={autoGridMaxRows}
+                                                onChange={(event) =>
+                                                    setAutoGridMaxRows(
+                                                        Math.max(
+                                                            1,
+                                                            Number(event.target.value) || 1,
+                                                        ),
+                                                    )
+                                                }
+                                            />
+                                        </label>
+                                        <label className="grid gap-1 text-xs text-slate-400">
+                                            每行数量
+                                            <input
+                                                className="rounded-md border border-white/10 bg-slate-950 px-2 py-2 text-sm text-slate-100"
+                                                min={1}
+                                                type="number"
+                                                value={autoGridMaxCols}
+                                                onChange={(event) =>
+                                                    setAutoGridMaxCols(
+                                                        Math.max(
+                                                            1,
+                                                            Number(event.target.value) || 1,
+                                                        ),
+                                                    )
+                                                }
+                                            />
+                                        </label>
                                     </div>
-                                    <div className="grid grid-cols-3 gap-2">
+                                    <div className="grid grid-cols-4 gap-2">
                                         {[
-                                            ["origin", "左上起点"],
-                                            ["right", "右侧相邻"],
-                                            ["down", "下方相邻"],
+                                            ["origin", "左上端点"],
+                                            ["right", "右上端点"],
+                                            ["down", "左下端点"],
+                                            ["bottomRight", "右下端点"],
                                         ].map(([value, label]) => (
                                             <button
                                                 key={value}
@@ -2507,9 +2481,10 @@ export const RoutePlannerPage: FC = () => {
                                         ))}
                                     </div>
                                     <div className="text-xs text-slate-400">
-                                        左上 {autoGridAnchors.origin ? "已标" : "未标"} · 右侧{" "}
-                                        {autoGridAnchors.right ? "已标" : "未标"} · 下方{" "}
-                                        {autoGridAnchors.down ? "已标" : "未标"}
+                                        左上 {autoGridAnchors.origin ? "已标" : "未标"} · 右上{" "}
+                                        {autoGridAnchors.right ? "已标" : "未标"} · 左下{" "}
+                                        {autoGridAnchors.down ? "已标" : "未标"} · 右下{" "}
+                                        {autoGridAnchors.bottomRight ? "已标" : "未标"}
                                     </div>
                                     <div className="grid grid-cols-2 gap-2">
                                         <button
@@ -2525,9 +2500,10 @@ export const RoutePlannerPage: FC = () => {
                                         <button
                                             className="rounded-md bg-slate-800 px-3 py-2 text-xs hover:bg-slate-700 disabled:opacity-40"
                                             disabled={
+                                                !autoGridAnchors.bottomRight &&
+                                                !autoGridAnchors.down &&
                                                 !autoGridAnchors.origin &&
-                                                !autoGridAnchors.right &&
-                                                !autoGridAnchors.down
+                                                !autoGridAnchors.right
                                             }
                                             type="button"
                                             onClick={clearAutoGridAnchors}
@@ -2536,11 +2512,12 @@ export const RoutePlannerPage: FC = () => {
                                         </button>
                                     </div>
                                     <button
-                                        className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+                                        className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-40"
                                         disabled={
                                             savedZoneIDs.length === 0 ||
                                             !autoGridAnchors.origin ||
-                                            !autoGridAnchors.right
+                                            !autoGridAnchors.right ||
+                                            (autoGridMaxRows > 1 && !autoGridAnchors.down)
                                         }
                                         type="button"
                                         onClick={generateAutoGridIslands}
