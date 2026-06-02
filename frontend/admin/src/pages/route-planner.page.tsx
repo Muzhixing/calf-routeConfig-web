@@ -204,6 +204,23 @@ function pointInPolygon(point: RealPoint, polygon: RealPoint[]): boolean {
     return inside;
 }
 
+function pointInZoneGenerationArea(
+    point: RealPoint,
+    polygon: RealPoint[],
+    tolerance: number,
+): boolean {
+    if (pointInPolygon(point, polygon)) {
+        return true;
+    }
+    const xs = polygon.map((item) => item.x);
+    const ys = polygon.map((item) => item.y);
+    const minX = Math.min(...xs) - tolerance;
+    const maxX = Math.max(...xs) + tolerance;
+    const minY = Math.min(...ys) - tolerance;
+    const maxY = Math.max(...ys) + tolerance;
+    return point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY;
+}
+
 function isModeAllowedForStep(mode: Mode, step: WizardStep): boolean {
     if (mode === "pan") {
         return true;
@@ -1033,7 +1050,8 @@ export const RoutePlannerPage: FC = () => {
             y: origin.y + horizontalLength,
         };
         const vertical = { x: down.x - origin.x, y: down.y - origin.y };
-        if (Math.hypot(vertical.x, vertical.y) < 0.05) {
+        const verticalLength = Math.hypot(vertical.x, vertical.y);
+        if (verticalLength < 0.05) {
             setMessage("纵向间距太小，无法生成");
             return;
         }
@@ -1041,22 +1059,23 @@ export const RoutePlannerPage: FC = () => {
         const startNumber = idNumber(autoGridStartID);
         let nextNumber = Number.isFinite(startNumber) ? startNumber : 1;
         const created = [];
+        const boundaryTolerance = Math.max(horizontalLength, verticalLength) * 0.75;
+        let emptyRowsAfterGenerated = 0;
         for (let row = 0; row < autoGridMaxRows; row += 1) {
             let rowHasIsland = false;
+            let rowEnteredArea = false;
             for (let col = 0; col < autoGridMaxCols; col += 1) {
                 const candidate = {
                     x: roundMeter(origin.x + horizontal.x * col + vertical.x * row),
                     y: roundMeter(origin.y + horizontal.y * col + vertical.y * row),
                 };
-                if (!pointInPolygon(candidate, zone.polygon)) {
-                    if (rowHasIsland) {
+                if (!pointInZoneGenerationArea(candidate, zone.polygon, boundaryTolerance)) {
+                    if (rowEnteredArea) {
                         break;
-                    }
-                    if (col === 0 && row > 0) {
-                        return applyGeneratedAutoGrid(created, prefix);
                     }
                     continue;
                 }
+                rowEnteredArea = true;
                 rowHasIsland = true;
                 created.push({
                     center: candidate,
@@ -1066,7 +1085,14 @@ export const RoutePlannerPage: FC = () => {
                 });
                 nextNumber += 1;
             }
-            if (!rowHasIsland && row > 0) {
+            if (rowHasIsland) {
+                emptyRowsAfterGenerated = 0;
+                continue;
+            }
+            if (created.length > 0) {
+                emptyRowsAfterGenerated += 1;
+            }
+            if (emptyRowsAfterGenerated >= 2) {
                 break;
             }
         }
@@ -1078,7 +1104,9 @@ export const RoutePlannerPage: FC = () => {
         prefix: string,
     ): void {
         if (created.length === 0) {
-            setMessage("没有生成犊牛岛，请检查样点是否在区域内部");
+            const text = "没有生成投喂点，请检查当前区域、起始编号和三个样点是否对应同一区域";
+            setMessage(text);
+            window.alert(text);
             return;
         }
         if (
