@@ -220,7 +220,7 @@ export const FeedingTasksPage: FC = () => {
                                     return (
                                         <line
                                             key={edge.id}
-                                            stroke={edge.type === "main" ? "#22d3ee" : "#a78bfa"}
+                                            stroke={edge.type === "main" ? "#3d6b56" : "#6b7280"}
                                             strokeLinecap="round"
                                             strokeWidth={4}
                                             x1={fromPx.px}
@@ -238,13 +238,13 @@ export const FeedingTasksPage: FC = () => {
                                             <circle
                                                 cx={center.px}
                                                 cy={center.py}
-                                                fill={target ? "#f97316" : "#22c55e"}
+                                                fill={target ? "#9a6a2f" : "#3f7d55"}
                                                 r={8}
-                                                stroke="#020617"
+                                                stroke="#1f2937"
                                                 strokeWidth={2}
                                             />
                                             <text
-                                                fill="#0f172a"
+                                                fill="#1f2937"
                                                 fontSize={14}
                                                 fontWeight={700}
                                                 paintOrder="stroke"
@@ -265,7 +265,7 @@ export const FeedingTasksPage: FC = () => {
                                             .map((point) => realToPixel(point, activeCalibration))
                                             .map((point) => `${point.px},${point.py}`)
                                             .join(" ")}
-                                        stroke="#f97316"
+                                        stroke="#9a6a2f"
                                         strokeLinecap="round"
                                         strokeLinejoin="round"
                                         strokeWidth={6}
@@ -285,13 +285,13 @@ export const FeedingTasksPage: FC = () => {
                                             <circle
                                                 cx={point.px}
                                                 cy={point.py}
-                                                fill={online ? "#22d3ee" : "#64748b"}
+                                                fill={online ? "#3d6b56" : "#9ca3af"}
                                                 r={10}
-                                                stroke="#020617"
+                                                stroke="#1f2937"
                                                 strokeWidth={2}
                                             />
                                             <text
-                                                fill="#0f172a"
+                                                fill="#1f2937"
                                                 fontSize={13}
                                                 fontWeight={700}
                                                 paintOrder="stroke"

@@ -11,7 +11,7 @@ export const AppSidebar: FC<Props> = ({ ...props }) => {
         <Sidebar collapsible="icon" {...props}>
             <SidebarHeader className="border-b border-sidebar-border px-3 py-4">
                 <div className="flex items-center gap-3 rounded-md px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-sidebar-border bg-background text-sidebar-foreground">
                         <MapPinnedIcon className="h-5 w-5" />
                     </span>
                     <span className="min-w-0 group-data-[collapsible=icon]:hidden">
