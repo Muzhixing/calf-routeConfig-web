@@ -1348,11 +1348,16 @@ export const RoutePlannerPage: FC = () => {
             });
         }
         if (step === "islands") {
+            const islandMarkers = new Set<string>();
             mapConfig.islands.forEach((island) => {
                 if (pointInRect(realToPixel(island.center, activeCalibration), rect)) {
-                    selected.add(`island:${island.id}`);
+                    islandMarkers.add(`island:${island.id}`);
                 }
             });
+            if (islandMarkers.size > 0) {
+                islandMarkers.forEach((marker) => selected.add(marker));
+                return selected;
+            }
             mapConfig.zones.forEach((zone) => {
                 const center = realToPixel(polygonCenter(zone.polygon), activeCalibration);
                 if (
@@ -1511,7 +1516,10 @@ export const RoutePlannerPage: FC = () => {
                         ),
                         nodes: current.roadGraph.nodes.filter((node) => !nodeIds.has(node.id)),
                     },
-                    zones: current.zones.filter((zone) => !zoneIds.has(zone.id)),
+                    zones:
+                        islandIds.size > 0
+                            ? current.zones
+                            : current.zones.filter((zone) => !zoneIds.has(zone.id)),
                 };
             },
             true,
