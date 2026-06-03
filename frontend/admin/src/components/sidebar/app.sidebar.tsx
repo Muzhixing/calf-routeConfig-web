@@ -1,6 +1,12 @@
 import { MapPinnedIcon } from "lucide-react";
 import { ComponentProps, FC } from "react";
-import { Sidebar, SidebarContent, SidebarHeader } from "@/components/shadcn/sidebar";
+import {
+    Sidebar,
+    SidebarContent,
+    SidebarHeader,
+    SidebarRail,
+    SidebarTrigger,
+} from "@/components/shadcn/sidebar";
 import { getMenuDefs } from "@/components/sidebar/menus.tsx";
 import { NavMenu } from "@/components/sidebar/nav.menu.tsx";
 
@@ -22,11 +28,16 @@ export const AppSidebar: FC<Props> = ({ ...props }) => {
                             管理端 1.0
                         </span>
                     </span>
+                    <SidebarTrigger
+                        className="ml-auto h-8 w-8 text-sidebar-foreground/70 group-data-[collapsible=icon]:hidden"
+                        title="收起侧边栏"
+                    />
                 </div>
             </SidebarHeader>
             <SidebarContent>
                 <NavMenu menus={getMenuDefs()} />
             </SidebarContent>
+            <SidebarRail />
         </Sidebar>
     );
 };

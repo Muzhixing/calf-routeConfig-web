@@ -390,6 +390,7 @@ export const RoutePlannerPage: FC = () => {
             setStep(data.currentStep || (data.imageUrl ? "calibration" : "upload"));
             setImageVersion(Date.now());
             setSelectedMarkers(new Set());
+            resetAutoGridDraft();
             setMessage(`已打开 ${data.name || data.mapID}`);
             await loadPlans(data.mapID);
         },
@@ -669,6 +670,7 @@ export const RoutePlannerPage: FC = () => {
         skipMapSaveRef.current = true;
         setMapConfig(data);
         setStep("upload");
+        resetAutoGridDraft();
         setPlans([]);
         setCurrentPlan(null);
         setMaps((items) => [data, ...items.filter((item) => item.mapID !== data.mapID)]);
@@ -779,6 +781,11 @@ export const RoutePlannerPage: FC = () => {
         pushHistory();
         setAutoGridAnchors({});
         setMessage("批量标定样点已清空");
+    }
+
+    function resetAutoGridDraft(): void {
+        setAutoGridAnchors({});
+        setAutoGridPick(null);
     }
 
     function clearCurrentStep(): void {
@@ -900,6 +907,7 @@ export const RoutePlannerPage: FC = () => {
         setMapConfig({ ...next, currentStep: "calibration" });
         clearGeneratedPath();
         setStep("calibration");
+        resetAutoGridDraft();
         setImageVersion(Date.now());
         setMessage("平面图已上传，请进行两点标定");
     }
@@ -920,10 +928,12 @@ export const RoutePlannerPage: FC = () => {
         if (value !== "roads") {
             roadCursorRef.current = null;
         }
+        if (value !== "islands") {
+            resetAutoGridDraft();
+        }
         dragRef.current = null;
         setSelectionRect(null);
         setSelectedMarkers(new Set());
-        setAutoGridPick(null);
         setStep(value);
         updateMap((current) => ({ ...current, currentStep: value }));
     }
@@ -1361,6 +1371,27 @@ export const RoutePlannerPage: FC = () => {
                     selected.add(`node:${node.id}`);
                 }
             });
+            const nodes = nodeMap(mapConfig.roadGraph);
+            mapConfig.roadGraph.edges.forEach((edge) => {
+                const from = nodes.get(edge.from);
+                const to = nodes.get(edge.to);
+                if (!from || !to) {
+                    return;
+                }
+                const fromPx = realToPixel(from, activeCalibration);
+                const toPx = realToPixel(to, activeCalibration);
+                const midPx = {
+                    px: (fromPx.px + toPx.px) / 2,
+                    py: (fromPx.py + toPx.py) / 2,
+                };
+                if (
+                    pointInRect(fromPx, rect) ||
+                    pointInRect(toPx, rect) ||
+                    pointInRect(midPx, rect)
+                ) {
+                    selected.add(`edge:${edge.id}`);
+                }
+            });
         }
         return selected;
     }
@@ -1461,6 +1492,9 @@ export const RoutePlannerPage: FC = () => {
                 const nodeIds = new Set(
                     [...markers].filter((id) => id.startsWith("node:")).map((id) => id.slice(5)),
                 );
+                const edgeIds = new Set(
+                    [...markers].filter((id) => id.startsWith("edge:")).map((id) => id.slice(5)),
+                );
                 if (roadCursorRef.current && nodeIds.has(roadCursorRef.current)) {
                     roadCursorRef.current = null;
                 }
@@ -1470,7 +1504,10 @@ export const RoutePlannerPage: FC = () => {
                     islands: current.islands.filter((island) => !islandIds.has(island.id)),
                     roadGraph: {
                         edges: current.roadGraph.edges.filter(
-                            (edge) => !nodeIds.has(edge.from) && !nodeIds.has(edge.to),
+                            (edge) =>
+                                !edgeIds.has(edge.id) &&
+                                !nodeIds.has(edge.from) &&
+                                !nodeIds.has(edge.to),
                         ),
                         nodes: current.roadGraph.nodes.filter((node) => !nodeIds.has(node.id)),
                     },
@@ -1481,6 +1518,7 @@ export const RoutePlannerPage: FC = () => {
             true,
         );
         setSelectedMarkers(new Set());
+        setMessage(`已删除 ${markers.size} 个选中对象`);
     }
 
     function completeZone(): void {
@@ -1508,11 +1546,30 @@ export const RoutePlannerPage: FC = () => {
         setMessage(`${id}区已完成，可继续标下一区域或开始标犊牛岛投喂点`);
     }
 
-    function selectZone(zoneIDValue: string): void {
-        const selected = mapConfig.islands
+    function zoneIslandIDs(zoneIDValue: string): string[] {
+        return mapConfig.islands
             .filter((island) => island.zoneID === zoneIDValue)
             .map((island) => island.id);
-        applyTargetSelection(new Set(selected));
+    }
+
+    function isZoneFullySelected(zoneIDValue: string): boolean {
+        const ids = zoneIslandIDs(zoneIDValue);
+        return ids.length > 0 && ids.every((id) => targetIslandIDs.has(id));
+    }
+
+    function toggleZoneSelection(zoneIDValue: string): void {
+        const ids = zoneIslandIDs(zoneIDValue);
+        if (ids.length === 0) {
+            setMessage(`${zoneIDValue}区没有可选择的犊牛岛`);
+            return;
+        }
+        const next = new Set(targetIslandIDs);
+        if (ids.every((id) => next.has(id))) {
+            ids.forEach((id) => next.delete(id));
+        } else {
+            ids.forEach((id) => next.add(id));
+        }
+        applyTargetSelection(next);
     }
 
     function selectRange(): void {
@@ -1704,6 +1761,27 @@ export const RoutePlannerPage: FC = () => {
                             <ZoomInIcon className="h-4 w-4" />
                         </button>
                     </div>
+
+                    {selectedMarkers.size > 0 && (
+                        <div
+                            className="ops-toolbar absolute bottom-4 left-4 z-30 flex flex-wrap items-center gap-2 rounded-md border border-cyan-400/30 bg-cyan-400/10 p-2 text-sm"
+                            onClick={(event) => event.stopPropagation()}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onMouseUp={(event) => event.stopPropagation()}
+                        >
+                            <span className="text-cyan-100">
+                                已框选 {selectedMarkers.size} 个对象
+                            </span>
+                            <button
+                                className="inline-flex items-center justify-center gap-2 rounded-md bg-rose-500 px-3 py-2 text-xs font-medium text-white hover:bg-rose-400"
+                                type="button"
+                                onClick={() => deleteSelected()}
+                            >
+                                <Trash2Icon className="h-4 w-4" />
+                                删除选中
+                            </button>
+                        </div>
+                    )}
 
                     <div
                         className="absolute left-0 top-0 origin-top-left"
@@ -2665,25 +2743,35 @@ export const RoutePlannerPage: FC = () => {
                                         }
                                     />
                                 </div>
-                                <select
-                                    className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm disabled:opacity-40"
-                                    disabled={savedZoneIDs.length === 0}
-                                    value=""
-                                    onChange={(event) => {
-                                        if (event.target.value) {
-                                            selectZone(event.target.value);
-                                        }
-                                    }}
-                                >
-                                    <option value="">
-                                        {savedZoneIDs.length ? "选择某个区域全部" : "请先保存区域"}
-                                    </option>
-                                    {savedZoneIDs.map((zone) => (
-                                        <option key={zone} value={zone}>
-                                            {zone}区全部
-                                        </option>
-                                    ))}
-                                </select>
+                                <div className="grid gap-2 rounded-md border border-white/10 bg-slate-900 p-2">
+                                    <div className="text-xs text-slate-500">
+                                        选择区域全部（可多选）
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {savedZoneIDs.length === 0 && (
+                                            <span className="text-xs text-slate-400">
+                                                请先保存区域
+                                            </span>
+                                        )}
+                                        {savedZoneIDs.map((zone) => {
+                                            const active = isZoneFullySelected(zone);
+                                            return (
+                                                <button
+                                                    key={zone}
+                                                    className={`rounded-md px-2 py-1 text-xs ${
+                                                        active
+                                                            ? "bg-cyan-400 text-slate-950"
+                                                            : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                                                    }`}
+                                                    type="button"
+                                                    onClick={() => toggleZoneSelection(zone)}
+                                                >
+                                                    {zone}区全部
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
                                 <div className="max-h-24 overflow-auto rounded-md bg-slate-900 p-2">
                                     <div className="flex flex-wrap gap-2">
                                         {mapConfig.islands.map((island) => (

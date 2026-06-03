@@ -412,6 +412,84 @@ export function appendUnique(points: GeneratedPoint[], point: Omit<GeneratedPoin
     points.push({ ...point, seq: points.length + 1 });
 }
 
+function zoneSortValue(zoneID: string): string {
+    return zoneID || "";
+}
+
+function estimateRowTolerance(islands: Island[]): number {
+    const values = [...new Set(islands.map((island) => Number(island.center.y.toFixed(3))))].sort(
+        (a, b) => a - b,
+    );
+    const gaps = values
+        .slice(1)
+        .map((value, index) => value - values[index])
+        .filter((value) => value > 0.05)
+        .sort((a, b) => a - b);
+    if (gaps.length === 0) {
+        return 0.35;
+    }
+    const median = gaps[Math.floor(gaps.length / 2)];
+    return Math.max(0.2, Math.min(1.5, median * 0.45));
+}
+
+function groupIslandRows(islands: Island[]): Island[][] {
+    const tolerance = estimateRowTolerance(islands);
+    const rows: { items: Island[]; y: number }[] = [];
+    [...islands]
+        .sort((a, b) => a.center.y - b.center.y || a.center.x - b.center.x)
+        .forEach((island) => {
+            const row = rows.find((item) => Math.abs(item.y - island.center.y) <= tolerance);
+            if (!row) {
+                rows.push({ items: [island], y: island.center.y });
+                return;
+            }
+            row.items.push(island);
+            row.y = row.items.reduce((sum, item) => sum + item.center.y, 0) / row.items.length;
+        });
+    return rows.sort((a, b) => a.y - b.y).map((row) => row.items);
+}
+
+function orderZoneIslandsForCoverage(islands: Island[], startPoint: RealPoint): Island[] {
+    const rows = groupIslandRows(islands);
+    const ordered: Island[] = [];
+    let cursor = startPoint;
+    let leftToRight = true;
+    rows.forEach((row, index) => {
+        const sorted = [...row].sort((a, b) => a.center.x - b.center.x);
+        if (index === 0) {
+            leftToRight =
+                distance(cursor, sorted[0].center) <=
+                distance(cursor, sorted[sorted.length - 1].center);
+        } else {
+            leftToRight = !leftToRight;
+        }
+        const rowOrder = leftToRight ? sorted : sorted.reverse();
+        ordered.push(...rowOrder);
+        cursor = rowOrder[rowOrder.length - 1].center;
+    });
+    return ordered;
+}
+
+function orderIslandsForCoverage(islands: Island[], startPoint: RealPoint): Island[] {
+    const byZone = new Map<string, Island[]>();
+    islands.forEach((island) => {
+        const zoneID = island.zoneID || "";
+        byZone.set(zoneID, [...(byZone.get(zoneID) || []), island]);
+    });
+    const ordered: Island[] = [];
+    let cursor = startPoint;
+    [...byZone.entries()]
+        .sort(([a], [b]) =>
+            zoneSortValue(a).localeCompare(zoneSortValue(b), undefined, { numeric: true }),
+        )
+        .forEach(([, zoneIslands]) => {
+            const zoneOrder = orderZoneIslandsForCoverage(zoneIslands, cursor);
+            ordered.push(...zoneOrder);
+            cursor = zoneOrder[zoneOrder.length - 1]?.center || cursor;
+        });
+    return ordered;
+}
+
 export function buildGeneratedPath(
     mapConfig: MapConfig,
     selectedIslands: Island[],
@@ -427,6 +505,7 @@ export function buildGeneratedPath(
         vehicle?.location_x != null && vehicle.location_y != null
             ? { x: vehicle.location_x, y: vehicle.location_y }
             : mapConfig.roadGraph.nodes[0] || feedPoint(selectedIslands[0]);
+    const orderedIslands = orderIslandsForCoverage(selectedIslands, startPoint);
     const points: GeneratedPoint[] = [];
     appendUnique(points, {
         action: "start",
@@ -435,7 +514,7 @@ export function buildGeneratedPath(
     });
 
     if (mapConfig.roadGraph.nodes.length === 0) {
-        selectedIslands.forEach((island) => {
+        orderedIslands.forEach((island) => {
             const target = feedPoint(island);
             appendUnique(points, {
                 action: "feed",
@@ -458,26 +537,10 @@ export function buildGeneratedPath(
             y: currentNode.y,
         });
     }
-    const remaining = [...selectedIslands];
-    while (remaining.length > 0 && currentNode) {
-        let bestIndex = 0;
-        let bestScore = Number.POSITIVE_INFINITY;
-        remaining.forEach((island, index) => {
-            const target = feedPoint(island);
-            const targetNode = findNearestNode(mapConfig.roadGraph, target);
-            if (!targetNode) {
-                return;
-            }
-            const score =
-                pathDistance(mapConfig.roadGraph, currentNode?.id || targetNode.id, targetNode.id) +
-                distance(targetNode, target);
-            if (score < bestScore) {
-                bestIndex = index;
-                bestScore = score;
-            }
-        });
-
-        const island = remaining.splice(bestIndex, 1)[0];
+    for (const island of orderedIslands) {
+        if (!currentNode) {
+            break;
+        }
         const target = feedPoint(island);
         const targetNode = findNearestNode(mapConfig.roadGraph, target);
         if (!targetNode) {
