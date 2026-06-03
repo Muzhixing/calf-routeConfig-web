@@ -37,6 +37,7 @@ import { LayoutContent } from "@/components/layout/layout.content.tsx";
 import {
     apiUrl,
     buildGeneratedPath,
+    type Calibration,
     DEFAULT_MAP,
     distance,
     EMPTY_CALIBRATION,
@@ -89,8 +90,8 @@ type SelectionRect = {
 
 type EditSnapshot = {
     autoGridAnchors: AutoGridAnchors;
-    autoGridMaxCols: number;
-    autoGridMaxRows: number;
+    autoGridMaxCols: string;
+    autoGridMaxRows: string;
     autoGridPick: AutoGridPick;
     autoGridStartID: string;
     autoGridZoneID: string;
@@ -222,6 +223,55 @@ function interpolatePoint(start: RealPoint, end: RealPoint, ratio: number): Real
     };
 }
 
+function parseAutoGridCount(value: string): number | null {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+        return null;
+    }
+    return Math.floor(parsed);
+}
+
+function remapPointForCalibration(
+    point: RealPoint,
+    previous: Calibration,
+    next: Calibration,
+): RealPoint {
+    return pixelToReal(realToPixel(point, previous), next);
+}
+
+function remapMapForCalibration(mapConfig: MapConfig, nextCalibration: Calibration): MapConfig {
+    const previous = mapConfig.calibration;
+    if (!hasCalibration(previous) || !hasCalibration(nextCalibration)) {
+        return { ...mapConfig, calibration: nextCalibration };
+    }
+    return {
+        ...mapConfig,
+        calibration: nextCalibration,
+        islands: mapConfig.islands.map((island) => ({
+            ...island,
+            center: remapPointForCalibration(island.center, previous, nextCalibration),
+            servicePoint: remapPointForCalibration(
+                island.servicePoint || island.center,
+                previous,
+                nextCalibration,
+            ),
+        })),
+        roadGraph: {
+            ...mapConfig.roadGraph,
+            nodes: mapConfig.roadGraph.nodes.map((node) => ({
+                ...node,
+                ...remapPointForCalibration(node, previous, nextCalibration),
+            })),
+        },
+        zones: mapConfig.zones.map((zone) => ({
+            ...zone,
+            polygon: zone.polygon.map((point) =>
+                remapPointForCalibration(point, previous, nextCalibration),
+            ),
+        })),
+    };
+}
+
 function polygonCenter(points: RealPoint[]): RealPoint {
     if (points.length === 0) {
         return { x: 0, y: 0 };
@@ -325,8 +375,8 @@ export const RoutePlannerPage: FC = () => {
     const [autoGridPick, setAutoGridPick] = useState<AutoGridPick>(null);
     const [autoGridZoneID, setAutoGridZoneID] = useState("A");
     const [autoGridStartID, setAutoGridStartID] = useState("A1");
-    const [autoGridMaxCols, setAutoGridMaxCols] = useState(80);
-    const [autoGridMaxRows, setAutoGridMaxRows] = useState(12);
+    const [autoGridMaxCols, setAutoGridMaxCols] = useState("80");
+    const [autoGridMaxRows, setAutoGridMaxRows] = useState("12");
 
     const activeCalibration = useMemo(
         () => (hasCalibration(mapConfig.calibration) ? mapConfig.calibration : null),
@@ -336,6 +386,11 @@ export const RoutePlannerPage: FC = () => {
         () => mapConfig.islands.filter((island) => targetIslandIDs.has(island.id)),
         [mapConfig.islands, targetIslandIDs],
     );
+    const autoGridColumnCount = useMemo(
+        () => parseAutoGridCount(autoGridMaxCols),
+        [autoGridMaxCols],
+    );
+    const autoGridRowCount = useMemo(() => parseAutoGridCount(autoGridMaxRows), [autoGridMaxRows]);
     const imageSrc = mapImageSrc(mapConfig, apiBase, imageVersion);
     const isPathReady = Boolean(
         currentPlan?.robotPath.length &&
@@ -962,19 +1017,19 @@ export const RoutePlannerPage: FC = () => {
     }
 
     function setCalibrationPoint(which: "p1" | "p2", point: PixelPoint): void {
-        const current = mapConfig.calibration || EMPTY_CALIBRATION;
         updateMap(
-            (data) => ({
-                ...data,
-                calibration: {
+            (data) => {
+                const current = data.calibration || EMPTY_CALIBRATION;
+                const nextCalibration = {
                     ...current,
                     [which]: {
                         ...current[which],
                         px: Number(point.px.toFixed(1)),
                         py: Number(point.py.toFixed(1)),
                     },
-                },
-            }),
+                };
+                return remapMapForCalibration(data, nextCalibration);
+            },
             true,
             true,
         );
@@ -986,15 +1041,15 @@ export const RoutePlannerPage: FC = () => {
         key: "px" | "py" | "x" | "y",
         value: number,
     ): void {
-        const current = mapConfig.calibration || EMPTY_CALIBRATION;
         updateMap(
-            (data) => ({
-                ...data,
-                calibration: {
+            (data) => {
+                const current = data.calibration || EMPTY_CALIBRATION;
+                const nextCalibration = {
                     ...current,
                     [which]: { ...current[which], [key]: value },
-                },
-            }),
+                };
+                return remapMapForCalibration(data, nextCalibration);
+            },
             true,
             true,
         );
@@ -1074,8 +1129,12 @@ export const RoutePlannerPage: FC = () => {
             setMessage("请先选择区域，并标左上端点和右上端点");
             return;
         }
-        const rowCount = Math.max(1, Math.floor(autoGridMaxRows));
-        const columnCount = Math.max(1, Math.floor(autoGridMaxCols));
+        const rowCount = autoGridRowCount;
+        const columnCount = autoGridColumnCount;
+        if (!rowCount || !columnCount) {
+            setMessage("请输入有效的行数和每行数量，数值必须大于等于 1");
+            return;
+        }
         const horizontalLength = distance(origin, right);
         if (horizontalLength < 0.05) {
             setMessage("左右端点距离太近，无法计算间距");
@@ -2514,12 +2573,7 @@ export const RoutePlannerPage: FC = () => {
                                                 type="number"
                                                 value={autoGridMaxRows}
                                                 onChange={(event) =>
-                                                    setAutoGridMaxRows(
-                                                        Math.max(
-                                                            1,
-                                                            Number(event.target.value) || 1,
-                                                        ),
-                                                    )
+                                                    setAutoGridMaxRows(event.target.value)
                                                 }
                                             />
                                         </label>
@@ -2531,12 +2585,7 @@ export const RoutePlannerPage: FC = () => {
                                                 type="number"
                                                 value={autoGridMaxCols}
                                                 onChange={(event) =>
-                                                    setAutoGridMaxCols(
-                                                        Math.max(
-                                                            1,
-                                                            Number(event.target.value) || 1,
-                                                        ),
-                                                    )
+                                                    setAutoGridMaxCols(event.target.value)
                                                 }
                                             />
                                         </label>
@@ -2604,9 +2653,11 @@ export const RoutePlannerPage: FC = () => {
                                         className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-40"
                                         disabled={
                                             savedZoneIDs.length === 0 ||
+                                            !autoGridRowCount ||
+                                            !autoGridColumnCount ||
                                             !autoGridAnchors.origin ||
                                             !autoGridAnchors.right ||
-                                            (autoGridMaxRows > 1 && !autoGridAnchors.down)
+                                            (autoGridRowCount > 1 && !autoGridAnchors.down)
                                         }
                                         type="button"
                                         onClick={generateAutoGridIslands}
