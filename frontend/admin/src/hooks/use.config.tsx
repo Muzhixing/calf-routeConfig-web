@@ -23,7 +23,7 @@ type ConfigProviderState = {
 const DEFAULT: Config = {
     mode: "light",
     radius: 0.5,
-    theme: "zinc",
+    theme: "farm",
 };
 
 const ConfigContext = createContext<ConfigProviderState>({
@@ -47,7 +47,7 @@ export function ConfigProvider({
                 ...defaultConfig,
                 ...savedConfig,
                 mode: "light",
-                theme: "zinc",
+                theme: "farm",
             };
         } catch (_) {
             return defaultConfig;

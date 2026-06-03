@@ -1774,7 +1774,7 @@ export const RoutePlannerPage: FC = () => {
                                         />
                                         {points[0] && (
                                             <text
-                                                fill="#1f2937"
+                                                fill="#0f172a"
                                                 fontSize={18 / zoom}
                                                 fontWeight={700}
                                                 paintOrder="stroke"
@@ -1810,11 +1810,11 @@ export const RoutePlannerPage: FC = () => {
                                                     cy={pixel.py}
                                                     fill="#facc15"
                                                     r={6 / zoom}
-                                                    stroke="#1f2937"
+                                                    stroke="#020617"
                                                     strokeWidth={2 / zoom}
                                                 />
                                                 <text
-                                                    fill="#1f2937"
+                                                    fill="#0f172a"
                                                     fontSize={13 / zoom}
                                                     fontWeight={800}
                                                     paintOrder="stroke"
@@ -1842,7 +1842,7 @@ export const RoutePlannerPage: FC = () => {
                                 return (
                                     <line
                                         key={edge.id}
-                                        stroke={edge.type === "main" ? "#3d6b56" : "#6b7280"}
+                                        stroke={edge.type === "main" ? "#22d3ee" : "#a78bfa"}
                                         strokeLinecap="round"
                                         strokeWidth={(edge.type === "main" ? 5 : 3) / zoom}
                                         x1={fromPx.px}
@@ -1862,7 +1862,7 @@ export const RoutePlannerPage: FC = () => {
                                         fill={
                                             selectedMarkers.has(`node:${node.id}`)
                                                 ? "#facc15"
-                                                : "#ffffff"
+                                                : "#e0f2fe"
                                         }
                                         r={5 / zoom}
                                     />
@@ -1879,17 +1879,17 @@ export const RoutePlannerPage: FC = () => {
                                             cy={center.py}
                                             fill={
                                                 target
-                                                    ? "#9a6a2f"
+                                                    ? "#f97316"
                                                     : selected
                                                       ? "#facc15"
-                                                      : "#3f7d55"
+                                                      : "#22c55e"
                                             }
                                             r={7 / zoom}
-                                            stroke="#1f2937"
+                                            stroke="#020617"
                                             strokeWidth={2 / zoom}
                                         />
                                         <text
-                                            fill="#1f2937"
+                                            fill="#0f172a"
                                             fontSize={13 / zoom}
                                             fontWeight={700}
                                             paintOrder="stroke"
@@ -1946,7 +1946,7 @@ export const RoutePlannerPage: FC = () => {
                                             <circle
                                                 cx={point.px}
                                                 cy={point.py}
-                                                fill="#1f2937"
+                                                fill="#0f172a"
                                                 r={8 / zoom}
                                                 stroke={
                                                     selectedMarkers.has(`cal:${key}`)
@@ -1974,7 +1974,7 @@ export const RoutePlannerPage: FC = () => {
                                         height={Math.abs(
                                             selectionRect.endPy - selectionRect.startPy,
                                         )}
-                                        stroke="#3d6b56"
+                                        stroke="#22d3ee"
                                         strokeDasharray="6 4"
                                         strokeWidth={3 / zoom}
                                         width={Math.abs(
@@ -1984,7 +1984,7 @@ export const RoutePlannerPage: FC = () => {
                                         y={Math.min(selectionRect.startPy, selectionRect.endPy)}
                                     />
                                     <text
-                                        fill="#1f2937"
+                                        fill="#0f172a"
                                         fontSize={13 / zoom}
                                         fontWeight={800}
                                         paintOrder="stroke"
@@ -2018,11 +2018,11 @@ export const RoutePlannerPage: FC = () => {
                                                 cy={point.py}
                                                 fill="#f59e0b"
                                                 r={8 / zoom}
-                                                stroke="#1f2937"
+                                                stroke="#020617"
                                                 strokeWidth={2 / zoom}
                                             />
                                             <text
-                                                fill="#1f2937"
+                                                fill="#0f172a"
                                                 fontSize={13 / zoom}
                                                 fontWeight={800}
                                                 paintOrder="stroke"
@@ -2051,11 +2051,11 @@ export const RoutePlannerPage: FC = () => {
                                         cy={feedbackPoint.py}
                                         fill="#facc15"
                                         r={6 / zoom}
-                                        stroke="#1f2937"
+                                        stroke="#020617"
                                         strokeWidth={2 / zoom}
                                     />
                                     <text
-                                        fill="#1f2937"
+                                        fill="#0f172a"
                                         fontSize={13 / zoom}
                                         fontWeight={700}
                                         paintOrder="stroke"

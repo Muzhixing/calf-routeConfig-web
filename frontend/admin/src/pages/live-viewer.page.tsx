@@ -201,12 +201,12 @@ export const LiveViewerPage: FC = () => {
             }
             const boxWidth = bbox.right - bbox.left;
             const boxHeight = bbox.bottom - bbox.top;
-            ctx.strokeStyle = "#3d6b56";
+            ctx.strokeStyle = "#22d3ee";
             ctx.lineWidth = 3;
             ctx.strokeRect(bbox.left, bbox.top, boxWidth, boxHeight);
-            ctx.fillStyle = "rgba(31, 41, 55, 0.86)";
+            ctx.fillStyle = "rgba(8, 47, 73, 0.85)";
             ctx.fillRect(bbox.left, Math.max(0, bbox.top - 24), Math.max(120, boxWidth), 24);
-            ctx.fillStyle = "#ffffff";
+            ctx.fillStyle = "#e0f2fe";
             ctx.font = "16px Inter, sans-serif";
             const score = item.score == null ? "" : ` ${(item.score * 100).toFixed(0)}%`;
             ctx.fillText(

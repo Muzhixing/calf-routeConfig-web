@@ -56,7 +56,7 @@ export const SignupPage: FC = () => {
         <div className="ops-auth-shell flex h-screen w-full items-center justify-center px-4">
             <Card className="mx-auto w-11/12 max-w-[400px] rounded-md border-[#d8dee6] shadow-sm sm:w-8/12 md:w-6/12 lg:w-4/12 xl:w-3/12">
                 <CardHeader className="space-y-1">
-                    <div className="text-center text-sm font-semibold text-[#1f2937]">
+                    <div className="text-center text-sm font-semibold text-[#0f766e]">
                         犊牛岛投喂车管理端
                     </div>
                     <CardTitle className="w-full text-center text-xl">{t("auth.signup")}</CardTitle>

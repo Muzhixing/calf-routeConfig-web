@@ -64,39 +64,39 @@
 }
 
 :root {
-    --radius: 0.625rem;
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.129 0.042 264.695);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.129 0.042 264.695);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.129 0.042 264.695);
-    --primary: oklch(0.208 0.042 265.755);
-    --primary-foreground: oklch(0.984 0.003 247.858);
-    --secondary: oklch(0.968 0.007 247.896);
-    --secondary-foreground: oklch(0.208 0.042 265.755);
-    --muted: oklch(0.968 0.007 247.896);
-    --muted-foreground: oklch(0.554 0.046 257.417);
-    --accent: oklch(0.968 0.007 247.896);
-    --accent-foreground: oklch(0.208 0.042 265.755);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.929 0.013 255.508);
-    --input: oklch(0.929 0.013 255.508);
-    --ring: oklch(0.704 0.04 256.788);
-    --chart-1: #3d6b56;
-    --chart-2: #5d6f82;
-    --chart-3: #9a6a2f;
-    --chart-4: #7a7f87;
-    --chart-5: #6f7d55;
+    --radius: 0.5rem;
+    --background: #f5f7f8;
+    --foreground: #182230;
+    --card: #ffffff;
+    --card-foreground: #182230;
+    --popover: #ffffff;
+    --popover-foreground: #182230;
+    --primary: #0f766e;
+    --primary-foreground: #ffffff;
+    --secondary: #e9eef3;
+    --secondary-foreground: #263244;
+    --muted: #eef2f5;
+    --muted-foreground: #687589;
+    --accent: #e5f1ef;
+    --accent-foreground: #0f5f59;
+    --destructive: #c2410c;
+    --border: #d8dee6;
+    --input: #cfd7e3;
+    --ring: #407f78;
+    --chart-1: #0f766e;
+    --chart-2: #426b8c;
+    --chart-3: #b7791f;
+    --chart-4: #64748b;
+    --chart-5: #7c8b5a;
 
-    --sidebar: var(--background);
-    --sidebar-foreground: var(--foreground);
-    --sidebar-primary: var(--primary);
-    --sidebar-primary-foreground: var(--primary-foreground);
-    --sidebar-accent: var(--accent);
-    --sidebar-accent-foreground: var(--accent-foreground);
-    --sidebar-border: var(--border);
-    --sidebar-ring: var(--ring);
+    --sidebar: #192334;
+    --sidebar-foreground: #d7dee8;
+    --sidebar-primary: #2fb39f;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #233148;
+    --sidebar-accent-foreground: #ffffff;
+    --sidebar-border: #2f3d52;
+    --sidebar-ring: #66a59b;
 }
 
 .dark {
@@ -154,6 +154,147 @@
     }
 }
 
+@layer components {
+    .ops-workspace {
+        background: #f3f6f8;
+        color: #182230;
+    }
+
+    .ops-workspace aside {
+        background: #ffffff;
+    }
+
+    .ops-workspace main {
+        background: #eef2f5;
+    }
+
+    .ops-workspace section,
+    .ops-panel {
+        background: #ffffff;
+        border-color: #d8dee6;
+        box-shadow: 0 1px 2px rgb(24 34 48 / 6%);
+    }
+
+    .ops-workspace input,
+    .ops-workspace select,
+    .ops-workspace textarea {
+        background: #ffffff;
+        border-color: #cfd7e3;
+        color: #182230;
+    }
+
+    .ops-workspace input::placeholder,
+    .ops-workspace textarea::placeholder {
+        color: #8a95a5;
+    }
+
+    .ops-workspace .bg-slate-950,
+    .ops-workspace .bg-slate-900 {
+        background-color: #ffffff;
+    }
+
+    .ops-workspace .bg-slate-800 {
+        background-color: #eef2f5;
+    }
+
+    .ops-workspace .bg-slate-900\/90 {
+        background-color: rgb(255 255 255 / 94%);
+        backdrop-filter: blur(6px);
+    }
+
+    .ops-workspace .hover\:bg-slate-800:hover,
+    .ops-workspace .hover\:bg-slate-700:hover {
+        background-color: #eef2f5;
+    }
+
+    .ops-workspace .border-white\/10 {
+        border-color: #d8dee6;
+    }
+
+    .ops-workspace .text-slate-100,
+    .ops-workspace .text-slate-200,
+    .ops-workspace .text-slate-300 {
+        color: #263244;
+    }
+
+    .ops-workspace .text-slate-400,
+    .ops-workspace .text-slate-500 {
+        color: #687589;
+    }
+
+    .ops-workspace .text-cyan-100,
+    .ops-workspace .text-cyan-300 {
+        color: #0f766e;
+    }
+
+    .ops-workspace .bg-cyan-400,
+    .ops-workspace .bg-cyan-500 {
+        background-color: #0f766e;
+        color: #ffffff;
+    }
+
+    .ops-workspace .hover\:bg-cyan-300:hover,
+    .ops-workspace .hover\:bg-cyan-400:hover {
+        background-color: #0d9488;
+        color: #ffffff;
+    }
+
+    .ops-workspace .border-cyan-400 {
+        border-color: #0f766e;
+    }
+
+    .ops-workspace .bg-cyan-400\/10 {
+        background-color: #ecf7f5;
+    }
+
+    .ops-workspace .border-cyan-400\/30 {
+        border-color: #9ccfc7;
+    }
+
+    .ops-workspace .bg-amber-400\/10 {
+        background-color: #fff7e6;
+    }
+
+    .ops-workspace .border-amber-400\/30 {
+        border-color: #f3d18a;
+    }
+
+    .ops-workspace .text-amber-100 {
+        color: #8a5a00;
+    }
+
+    .ops-workspace .bg-rose-500 {
+        background-color: #b42318;
+        color: #ffffff;
+    }
+
+    .ops-workspace .hover\:bg-rose-400:hover {
+        background-color: #c2410c;
+    }
+
+    .ops-toolbar {
+        background: rgb(255 255 255 / 94%);
+        border: 1px solid #d8dee6;
+        box-shadow: 0 8px 24px rgb(24 34 48 / 8%);
+    }
+
+    .ops-map-surface {
+        background:
+            linear-gradient(#eef2f5 1px, transparent 1px),
+            linear-gradient(90deg, #eef2f5 1px, transparent 1px), #f8fafb;
+        background-size: 32px 32px;
+    }
+
+    .ops-workspace main.ops-video-surface {
+        background: #0b1118;
+    }
+
+    .ops-auth-shell {
+        background:
+            linear-gradient(180deg, rgb(255 255 255 / 72%), rgb(245 247 248 / 96%)), #f5f7f8;
+    }
+}
+
 /* styles.css */
 .CollapsibleContent {
     overflow: hidden;
@@ -185,8 +326,8 @@
 
 /* Product workspace overrides must live outside Tailwind layers so they beat utility classes. */
 .ops-workspace {
-    background: #f6f7f9;
-    color: #1f2937;
+    background: #f3f6f8;
+    color: #182230;
 }
 
 .ops-workspace aside {
@@ -194,27 +335,27 @@
 }
 
 .ops-workspace main {
-    background: #f3f4f6;
+    background: #eef2f5;
 }
 
 .ops-workspace section,
 .ops-panel {
     background: #ffffff;
-    border-color: #e5e7eb;
-    box-shadow: 0 1px 2px rgb(31 41 55 / 5%);
+    border-color: #d8dee6;
+    box-shadow: 0 1px 2px rgb(24 34 48 / 6%);
 }
 
 .ops-workspace input,
 .ops-workspace select,
 .ops-workspace textarea {
     background: #ffffff;
-    border-color: #d1d5db;
-    color: #1f2937;
+    border-color: #cfd7e3;
+    color: #182230;
 }
 
 .ops-workspace input::placeholder,
 .ops-workspace textarea::placeholder {
-    color: #9ca3af;
+    color: #8a95a5;
 }
 
 .ops-workspace .bg-slate-950,
@@ -223,74 +364,62 @@
 }
 
 .ops-workspace .bg-slate-800 {
-    background-color: #f3f4f6;
+    background-color: #eef2f5;
 }
 
 .ops-workspace .bg-slate-900\/90 {
     background-color: rgb(255 255 255 / 94%);
-    backdrop-filter: blur(4px);
+    backdrop-filter: blur(6px);
 }
 
 .ops-workspace .hover\:bg-slate-800:hover,
 .ops-workspace .hover\:bg-slate-700:hover {
-    background-color: #eef0f3;
+    background-color: #eef2f5;
 }
 
 .ops-workspace .border-white\/10 {
-    border-color: #e5e7eb;
-}
-
-.ops-workspace .border-slate-600 {
-    border-color: #cbd5e1;
+    border-color: #d8dee6;
 }
 
 .ops-workspace .text-slate-100,
 .ops-workspace .text-slate-200,
 .ops-workspace .text-slate-300,
 .ops-workspace .text-slate-950 {
-    color: #1f2937;
+    color: #263244;
 }
 
 .ops-workspace .text-slate-400,
 .ops-workspace .text-slate-500 {
-    color: #6b7280;
+    color: #687589;
 }
 
 .ops-workspace .text-cyan-100,
 .ops-workspace .text-cyan-300 {
-    color: #3d6b56;
-}
-
-.ops-workspace .text-emerald-300 {
-    color: #2f7a4f;
+    color: #0f766e;
 }
 
 .ops-workspace .bg-cyan-400,
 .ops-workspace .bg-cyan-500 {
-    background-color: #1f2937;
+    background-color: #0f766e;
     color: #ffffff;
 }
 
 .ops-workspace .hover\:bg-cyan-300:hover,
 .ops-workspace .hover\:bg-cyan-400:hover {
-    background-color: #374151;
+    background-color: #0d9488;
     color: #ffffff;
 }
 
 .ops-workspace .border-cyan-400 {
-    border-color: #3d6b56;
+    border-color: #0f766e;
 }
 
 .ops-workspace .bg-cyan-400\/10 {
-    background-color: #eef4f1;
+    background-color: #ecf7f5;
 }
 
 .ops-workspace .border-cyan-400\/30 {
-    border-color: #b8c9c0;
-}
-
-.ops-workspace .bg-emerald-400\/15 {
-    background-color: #eef7f2;
+    border-color: #9ccfc7;
 }
 
 .ops-workspace .bg-amber-400\/10 {
@@ -316,14 +445,14 @@
 
 .ops-toolbar {
     background: rgb(255 255 255 / 94%);
-    border: 1px solid #e5e7eb;
-    box-shadow: 0 8px 24px rgb(31 41 55 / 8%);
+    border: 1px solid #d8dee6;
+    box-shadow: 0 8px 24px rgb(24 34 48 / 8%);
 }
 
 .ops-map-surface {
     background:
-        linear-gradient(#edf0f3 1px, transparent 1px),
-        linear-gradient(90deg, #edf0f3 1px, transparent 1px), #fafafa;
+        linear-gradient(#eef2f5 1px, transparent 1px),
+        linear-gradient(90deg, #eef2f5 1px, transparent 1px), #f8fafb;
     background-size: 32px 32px;
 }
 
@@ -332,5 +461,5 @@
 }
 
 .ops-auth-shell {
-    background: #f6f7f9;
+    background: linear-gradient(180deg, rgb(255 255 255 / 72%), rgb(245 247 248 / 96%)), #f5f7f8;
 }

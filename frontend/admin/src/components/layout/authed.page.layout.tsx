@@ -19,14 +19,14 @@ export const AuthedPageLayout: FC = () => {
                     "peer-data-[state=expanded]:w-[calc(100%-var(--sidebar-width))]",
                     "transition-[width] ease-linear duration-200",
                     "h-svh flex flex-col",
-                    "bg-[#f6f7f9]",
+                    "bg-[#f5f7f8]",
                     "group-data-[scroll-locked=1]/body:h-full",
                     "group-data-[scroll-locked=1]/body:has-[main.fixed-main]:h-svh",
                 )}
             >
                 <Header fixed>
                     <div className="ml-auto flex items-center gap-3">
-                        <div className="hidden rounded-md border border-[#e5e7eb] bg-white px-3 py-1.5 text-xs text-[#6b7280] md:block">
+                        <div className="hidden rounded-md border border-[#d8dee6] bg-white px-3 py-1.5 text-xs text-[#687589] md:block">
                             5173 统一入口
                         </div>
                         <LanguageSwitch />
