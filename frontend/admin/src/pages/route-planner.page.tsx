@@ -897,10 +897,10 @@ export const RoutePlannerPage: FC = () => {
         setMessage("全部标注已清空");
     }
 
-    async function createNewPlan(): Promise<void> {
+    async function createPlanDraft(overrides: Partial<RoutePlan> = {}): Promise<RoutePlan | null> {
         if (!mapConfig.mapID) {
             setMessage("请先创建或选择地图");
-            return;
+            return null;
         }
         const response = await fetch(
             apiUrl(apiBase, `/api/maps/${encodeURIComponent(mapConfig.mapID)}/plans`),
@@ -910,6 +910,7 @@ export const RoutePlannerPage: FC = () => {
                     name: `路线方案 ${new Date().toLocaleString("zh-CN")}`,
                     robotPath: [],
                     targetIslandIDs: [],
+                    ...overrides,
                 }),
                 credentials: "same-origin",
                 headers: { "Content-Type": "application/json" },
@@ -926,6 +927,14 @@ export const RoutePlannerPage: FC = () => {
         skipPlanSaveRef.current = true;
         setCurrentPlan(data);
         setPlans((items) => [data, ...items.filter((item) => item.planID !== data.planID)]);
+        return data;
+    }
+
+    async function createNewPlan(): Promise<void> {
+        const data = await createPlanDraft();
+        if (!data) {
+            return;
+        }
         setTargetIslandIDs(new Set());
         setMessage("新路线方案已创建");
     }
@@ -1669,23 +1678,37 @@ export const RoutePlannerPage: FC = () => {
         );
     }
 
-    function generateAndSavePlan(): void {
-        if (!currentPlan) {
-            setMessage("请先新建或选择路线方案");
+    async function generateAndSavePlan(): Promise<void> {
+        if (targetIslandIDs.size === 0) {
+            setMessage("请先选择需要投喂的犊牛岛");
             return;
         }
         const path = buildGeneratedPath(mapConfig, selectedTargetIslands, null, feedAmount);
+        if (path.length === 0) {
+            setMessage("请先选择需要投喂的犊牛岛");
+            return;
+        }
+        const targetIDs = [...targetIslandIDs];
+        const basePlan =
+            currentPlan ||
+            (await createPlanDraft({
+                feedAmount,
+                robotPath: path,
+                targetIslandIDs: targetIDs,
+            }));
+        if (!basePlan) {
+            return;
+        }
         const next = {
-            ...currentPlan,
+            ...basePlan,
             feedAmount,
             mapID: mapConfig.mapID,
             robotPath: path,
-            targetIslandIDs: [...targetIslandIDs],
+            targetIslandIDs: targetIDs,
         };
         setCurrentPlan(next);
-        setMessage(
-            path.length ? `路线方案已生成 ${path.length} 个路径点` : "请先选择需要投喂的犊牛岛",
-        );
+        setPlans((items) => [next, ...items.filter((item) => item.planID !== next.planID)]);
+        setMessage(`路线方案已生成 ${path.length} 个路径点`);
     }
 
     const savedZoneIDs = useMemo(
@@ -2855,9 +2878,13 @@ export const RoutePlannerPage: FC = () => {
                                 </div>
                                 <button
                                     className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
-                                    disabled={!currentPlan || targetIslandIDs.size === 0}
+                                    disabled={targetIslandIDs.size === 0}
                                     type="button"
-                                    onClick={generateAndSavePlan}
+                                    onClick={() =>
+                                        void generateAndSavePlan().catch((error) =>
+                                            setMessage(String(error)),
+                                        )
+                                    }
                                 >
                                     <RouteIcon className="h-4 w-4" />
                                     生成可下发路径
