@@ -57,22 +57,15 @@ export const LiveViewerPage: FC = () => {
     const pcRef = useRef<RTCPeerConnection | null>(null);
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
-    const [signalUrl, setSignalUrl] = useState(defaultSignalUrl());
     const [deviceID, setDeviceID] = useState("robot001");
-    const [iceServersInput, setIceServersInput] = useState("");
     const [connected, setConnected] = useState(false);
     const [status, setStatus] = useState("未连接");
     const [metadata, setMetadata] = useState<Metadata | null>(null);
     const [deviceStatus, setDeviceStatus] = useState("{}");
     const [logs, setLogs] = useState<string[]>([]);
 
-    const iceServers = useMemo(() => {
-        const urls = iceServersInput
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean);
-        return urls.length ? [{ urls }] : undefined;
-    }, [iceServersInput]);
+    const detectionCount = metadata?.detections?.length || 0;
+    const signalUrl = useMemo(defaultSignalUrl, []);
 
     function log(message: string): void {
         const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -90,7 +83,7 @@ export const LiveViewerPage: FC = () => {
         if (pcRef.current) {
             return pcRef.current;
         }
-        const pc = new RTCPeerConnection({ iceServers });
+        const pc = new RTCPeerConnection();
         pcRef.current = pc;
         pc.ontrack = (event) => {
             const stream = event.streams[0];
@@ -152,7 +145,7 @@ export const LiveViewerPage: FC = () => {
         ws.onopen = () => {
             setConnected(true);
             setStatus("等待板卡视频");
-            log(`信令已连接 ${signalUrl}`);
+            log("信令已连接");
         };
         ws.onmessage = (event) => {
             void handleSignal(JSON.parse(String(event.data)) as SignalMessage).catch((error) =>
@@ -226,7 +219,7 @@ export const LiveViewerPage: FC = () => {
 
     return (
         <LayoutContent fixed className="h-[calc(100vh-4rem)]">
-            <div className="ops-workspace grid h-full grid-cols-[minmax(0,1fr)_360px] text-slate-100 max-lg:grid-cols-1">
+            <div className="ops-workspace grid h-full grid-cols-[minmax(0,1fr)_300px] text-slate-100 max-lg:grid-cols-1">
                 <main className="ops-video-surface relative min-h-[520px] bg-black">
                     <video
                         ref={videoRef}
@@ -249,51 +242,33 @@ export const LiveViewerPage: FC = () => {
                     )}
                 </main>
 
-                <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto border-l border-white/10 bg-slate-900 p-4">
-                    <div>
-                        <h1 className="text-lg font-semibold">视频识别</h1>
-                        <p className="mt-1 text-sm text-slate-400">
-                            浏览器接收原始视频并叠加板卡 metadata 检测框。
-                        </p>
-                    </div>
-
+                <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto border-l border-white/10 bg-slate-900 p-3">
                     <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
-                        <div className="text-sm font-medium">连接设置</div>
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h1 className="text-base font-semibold">视频识别</h1>
+                                <p className="mt-1 text-xs text-slate-500">原始视频 + 浏览器叠框</p>
+                            </div>
+                            <span
+                                className={`rounded-full px-2 py-1 text-xs ${connected ? "bg-emerald-400/15 text-emerald-300" : "bg-slate-800 text-slate-400"}`}
+                            >
+                                {connected ? "已连接" : "离线"}
+                            </span>
+                        </div>
                         <label className="grid gap-1 text-sm">
-                            <span className="text-slate-400">信令地址</span>
+                            <span className="text-xs text-slate-500">设备 ID</span>
                             <input
-                                className="rounded-md border border-white/10 bg-slate-950 px-3 py-2"
-                                value={signalUrl}
-                                onChange={(event) => setSignalUrl(event.target.value)}
-                            />
-                        </label>
-                        <label className="grid gap-1 text-sm">
-                            <span className="text-slate-400">设备 ID</span>
-                            <input
-                                className="rounded-md border border-white/10 bg-slate-950 px-3 py-2"
+                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
                                 value={deviceID}
                                 onChange={(event) => setDeviceID(event.target.value)}
                             />
                         </label>
-                        <details className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm">
-                            <summary className="cursor-pointer text-xs font-medium text-slate-500">
-                                高级 ICE 设置
-                            </summary>
-                            <label className="mt-3 grid gap-1">
-                                <span className="text-slate-400">ICE Servers</span>
-                                <input
-                                    className="rounded-md border border-white/10 bg-slate-950 px-3 py-2"
-                                    value={iceServersInput}
-                                    placeholder="stun:stun.l.google.com:19302"
-                                    onChange={(event) => setIceServersInput(event.target.value)}
-                                />
-                            </label>
-                        </details>
                     </section>
 
                     <div className="grid grid-cols-3 gap-2">
                         <button
                             className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-400"
+                            type="button"
                             onClick={() => void connect()}
                         >
                             <PlugIcon className="h-4 w-4" />
@@ -301,6 +276,7 @@ export const LiveViewerPage: FC = () => {
                         </button>
                         <button
                             className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                            type="button"
                             onClick={() => void disconnect()}
                         >
                             <UnplugIcon className="h-4 w-4" />
@@ -308,6 +284,7 @@ export const LiveViewerPage: FC = () => {
                         </button>
                         <button
                             className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+                            type="button"
                             onClick={() =>
                                 void refreshStatus().catch((error) =>
                                     setDeviceStatus(String(error)),
@@ -319,30 +296,71 @@ export const LiveViewerPage: FC = () => {
                         </button>
                     </div>
 
-                    <section className="rounded-md border border-white/10 bg-slate-950 p-3 text-sm text-slate-300">
-                        <div>{status}</div>
-                        <div className="mt-2 text-slate-400">
-                            距离：
-                            {metadata?.distance_m == null
-                                ? "-"
-                                : `${metadata.distance_m.toFixed(3)} m`}
-                        </div>
-                        <div className="text-slate-400">
-                            检测：{metadata?.detected ? "是" : "否"}
+                    <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
+                        <div className="text-sm text-slate-300">{status}</div>
+                        <div className="grid grid-cols-2 gap-2">
+                            <div className="rounded-md bg-slate-900 p-3">
+                                <div className="text-xs text-slate-500">距离</div>
+                                <div className="mt-1 text-lg font-semibold">
+                                    {metadata?.distance_m == null
+                                        ? "-"
+                                        : `${metadata.distance_m.toFixed(3)}m`}
+                                </div>
+                            </div>
+                            <div className="rounded-md bg-slate-900 p-3">
+                                <div className="text-xs text-slate-500">检测框</div>
+                                <div className="mt-1 text-lg font-semibold">{detectionCount}</div>
+                            </div>
                         </div>
                     </section>
 
-                    <pre className="max-h-48 overflow-auto rounded-md border border-white/10 bg-slate-950 p-3 text-xs text-slate-400">
-                        {JSON.stringify(metadata || {}, null, 2)}
-                    </pre>
-                    <pre className="max-h-36 overflow-auto rounded-md border border-white/10 bg-slate-950 p-3 text-xs text-slate-400">
-                        {deviceStatus}
-                    </pre>
-                    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-white/10 bg-slate-950 p-3 text-xs text-slate-400">
-                        {logs.map((item) => (
-                            <div key={item}>{item}</div>
-                        ))}
-                    </div>
+                    <section className="grid gap-2 rounded-md border border-white/10 bg-slate-950 p-3 text-xs text-slate-400">
+                        <div className="flex justify-between gap-3">
+                            <span>帧 ID</span>
+                            <span className="text-slate-200">{metadata?.frame_id ?? "-"}</span>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                            <span>画面</span>
+                            <span className="text-slate-200">
+                                {metadata?.image
+                                    ? `${metadata.image.width}x${metadata.image.height}`
+                                    : "-"}
+                            </span>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                            <span>目标</span>
+                            <span className="text-slate-200">
+                                {metadata?.detected ? "已发现" : "未发现"}
+                            </span>
+                        </div>
+                    </section>
+
+                    <details className="rounded-md border border-white/10 bg-slate-950 p-3 text-xs text-slate-400">
+                        <summary className="cursor-pointer font-medium text-slate-300">
+                            详细数据
+                        </summary>
+                        <pre className="mt-3 max-h-44 overflow-auto">
+                            {JSON.stringify(metadata || {}, null, 2)}
+                        </pre>
+                    </details>
+
+                    <details className="rounded-md border border-white/10 bg-slate-950 p-3 text-xs text-slate-400">
+                        <summary className="cursor-pointer font-medium text-slate-300">
+                            设备状态
+                        </summary>
+                        <pre className="mt-3 max-h-36 overflow-auto">{deviceStatus}</pre>
+                    </details>
+
+                    <details className="min-h-0 rounded-md border border-white/10 bg-slate-950 p-3 text-xs text-slate-400">
+                        <summary className="cursor-pointer font-medium text-slate-300">
+                            连接日志
+                        </summary>
+                        <div className="mt-3 max-h-40 overflow-auto">
+                            {logs.map((item) => (
+                                <div key={item}>{item}</div>
+                            ))}
+                        </div>
+                    </details>
                 </aside>
             </div>
         </LayoutContent>
