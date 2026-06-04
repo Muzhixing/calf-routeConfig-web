@@ -36,7 +36,7 @@ export type RoadEdge = {
     from: string;
     id: string;
     to: string;
-    type: "inner" | "main";
+    type: "inner" | "main" | "robot";
 };
 
 export type RoadGraph = {

@@ -311,13 +311,14 @@ function stepHelp(step: WizardStep): string[] {
     if (step === "roads") {
         return [
             "通道模式沿道路中心逐点点击，系统按顺序连线。",
+            "主通道/内部通道用于描述道路网络；机器人行进路线用于标出车辆实际可走的重点路线。",
             "平移后点击继续标定通道路线即可恢复通道标点。",
             "点击断开连线后可从另一段通道重新开始，右键节点或边可删除。",
         ];
     }
     return [
-        "可下发路径是投喂任务页能够直接发送给板卡的 robotPath。",
-        "先选择目标犊牛岛，再点击生成可下发路径；目标变化后需要重新生成。",
+        "保存方案只保存当前平面图、区域、犊牛岛投喂点和道路网络。",
+        "投喂目标和可下发路径在投喂任务页面生成。",
     ];
 }
 
@@ -327,6 +328,7 @@ export const RoutePlannerPage: FC = () => {
     const mapSaveTimerRef = useRef<number | null>(null);
     const planSaveTimerRef = useRef<number | null>(null);
     const feedbackTimerRef = useRef<number | null>(null);
+    const saveNoticeTimerRef = useRef<number | null>(null);
     const skipMapSaveRef = useRef(false);
     const skipPlanSaveRef = useRef(false);
     const dragRef = useRef<DragState>(null);
@@ -347,7 +349,7 @@ export const RoutePlannerPage: FC = () => {
     const [zoneDraft, setZoneDraft] = useState<RealPoint[]>([]);
     const [islandID, setIslandID] = useState("A1");
     const [islandZoneID, setIslandZoneID] = useState("A");
-    const [roadEdgeType, setRoadEdgeType] = useState<"inner" | "main">("main");
+    const [roadEdgeType, setRoadEdgeType] = useState<"inner" | "main" | "robot">("main");
     const [selectedMarkers, setSelectedMarkers] = useState<Set<string>>(new Set());
     const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
     const [planNameDraft, setPlanNameDraft] = useState("");
@@ -357,6 +359,7 @@ export const RoutePlannerPage: FC = () => {
     const [history, setHistory] = useState<EditSnapshot[]>([]);
     const [futureHistory, setFutureHistory] = useState<EditSnapshot[]>([]);
     const [feedbackPoint, setFeedbackPoint] = useState<FeedbackPoint | null>(null);
+    const [saveSuccessNotice, setSaveSuccessNotice] = useState("");
     const [showHelp, setShowHelp] = useState(true);
     const [autoGridAnchors, setAutoGridAnchors] = useState<AutoGridAnchors>({});
     const [autoGridPick, setAutoGridPick] = useState<AutoGridPick>(null);
@@ -449,6 +452,9 @@ export const RoutePlannerPage: FC = () => {
         () => () => {
             if (feedbackTimerRef.current) {
                 window.clearTimeout(feedbackTimerRef.current);
+            }
+            if (saveNoticeTimerRef.current) {
+                window.clearTimeout(saveNoticeTimerRef.current);
             }
         },
         [],
@@ -923,9 +929,13 @@ export const RoutePlannerPage: FC = () => {
             });
         }
         setPlanSaveStatus(`已保存 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`);
-        setMessage(
-            `方案已保存：区域 ${mapConfig.zones.length}、投喂点 ${mapConfig.islands.length}、通道节点 ${mapConfig.roadGraph.nodes.length}`,
-        );
+        const successText = `「${name}」保存成功：区域 ${mapConfig.zones.length}、投喂点 ${mapConfig.islands.length}、通道节点 ${mapConfig.roadGraph.nodes.length}、通道边 ${mapConfig.roadGraph.edges.length}`;
+        setMessage(successText);
+        setSaveSuccessNotice(successText);
+        if (saveNoticeTimerRef.current) {
+            window.clearTimeout(saveNoticeTimerRef.current);
+        }
+        saveNoticeTimerRef.current = window.setTimeout(() => setSaveSuccessNotice(""), 4_000);
     }
 
     async function uploadImage(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -1274,7 +1284,7 @@ export const RoutePlannerPage: FC = () => {
         if (!point) {
             return;
         }
-        if (mode === "select") {
+        if (mode === "select" && event.button === 0) {
             dragRef.current = { startPx: point.px, startPy: point.py, type: "select" };
             setSelectionRect({
                 endPx: point.px,
@@ -1337,6 +1347,10 @@ export const RoutePlannerPage: FC = () => {
             setSelectionRect(null);
             return;
         }
+        if (event.button !== 0) {
+            setSelectionRect(null);
+            return;
+        }
         if (drag.type === "select") {
             const rect = selectionRect || {
                 endPx: point.px,
@@ -1366,6 +1380,10 @@ export const RoutePlannerPage: FC = () => {
 
     function handleContextMenu(event: MouseEvent<HTMLDivElement>): void {
         event.preventDefault();
+        if (selectedMarkers.size > 0) {
+            deleteSelected();
+            return;
+        }
         const point = viewportPoint(event.clientX, event.clientY);
         if (!point) {
             return;
@@ -1405,6 +1423,14 @@ export const RoutePlannerPage: FC = () => {
             });
         }
         if (step === "islands") {
+            zoneDraft.forEach((draftPoint, index) => {
+                if (pointInRect(realToPixel(draftPoint, activeCalibration), rect)) {
+                    selected.add(`draft:${index}`);
+                }
+            });
+            if (selected.size > 0) {
+                return selected;
+            }
             const islandMarkers = new Set<string>();
             mapConfig.islands.forEach((island) => {
                 if (pointInRect(realToPixel(island.center, activeCalibration), rect)) {
@@ -1536,52 +1562,75 @@ export const RoutePlannerPage: FC = () => {
         if (markers.size === 0) {
             return;
         }
-        updateMap(
-            (current) => {
-                let calibration = current.calibration;
-                if (calibration && markers.has("cal:p1")) {
-                    calibration = { ...calibration, p1: EMPTY_CALIBRATION.p1 };
-                }
-                if (calibration && markers.has("cal:p2")) {
-                    calibration = { ...calibration, p2: EMPTY_CALIBRATION.p2 };
-                }
-                const islandIds = new Set(
-                    [...markers].filter((id) => id.startsWith("island:")).map((id) => id.slice(7)),
-                );
-                const zoneIds = new Set(
-                    [...markers].filter((id) => id.startsWith("zone:")).map((id) => id.slice(5)),
-                );
-                const nodeIds = new Set(
-                    [...markers].filter((id) => id.startsWith("node:")).map((id) => id.slice(5)),
-                );
-                const edgeIds = new Set(
-                    [...markers].filter((id) => id.startsWith("edge:")).map((id) => id.slice(5)),
-                );
-                if (roadCursorRef.current && nodeIds.has(roadCursorRef.current)) {
-                    roadCursorRef.current = null;
-                }
-                return {
-                    ...current,
-                    calibration,
-                    islands: current.islands.filter((island) => !islandIds.has(island.id)),
-                    roadGraph: {
-                        edges: current.roadGraph.edges.filter(
-                            (edge) =>
-                                !edgeIds.has(edge.id) &&
-                                !nodeIds.has(edge.from) &&
-                                !nodeIds.has(edge.to),
-                        ),
-                        nodes: current.roadGraph.nodes.filter((node) => !nodeIds.has(node.id)),
-                    },
-                    zones:
-                        islandIds.size > 0
-                            ? current.zones
-                            : current.zones.filter((zone) => !zoneIds.has(zone.id)),
-                };
-            },
-            true,
-            true,
+        const draftIndexes = new Set(
+            [...markers]
+                .filter((id) => id.startsWith("draft:"))
+                .map((id) => Number(id.slice(6)))
+                .filter(Number.isFinite),
         );
+        const hasMapMarkers = [...markers].some((id) => !id.startsWith("draft:"));
+        if (draftIndexes.size > 0 && !hasMapMarkers) {
+            pushHistory();
+        }
+        if (draftIndexes.size > 0) {
+            setZoneDraft((items) => items.filter((_, index) => !draftIndexes.has(index)));
+        }
+        if (hasMapMarkers) {
+            updateMap(
+                (current) => {
+                    let calibration = current.calibration;
+                    if (calibration && markers.has("cal:p1")) {
+                        calibration = { ...calibration, p1: EMPTY_CALIBRATION.p1 };
+                    }
+                    if (calibration && markers.has("cal:p2")) {
+                        calibration = { ...calibration, p2: EMPTY_CALIBRATION.p2 };
+                    }
+                    const islandIds = new Set(
+                        [...markers]
+                            .filter((id) => id.startsWith("island:"))
+                            .map((id) => id.slice(7)),
+                    );
+                    const zoneIds = new Set(
+                        [...markers]
+                            .filter((id) => id.startsWith("zone:"))
+                            .map((id) => id.slice(5)),
+                    );
+                    const nodeIds = new Set(
+                        [...markers]
+                            .filter((id) => id.startsWith("node:"))
+                            .map((id) => id.slice(5)),
+                    );
+                    const edgeIds = new Set(
+                        [...markers]
+                            .filter((id) => id.startsWith("edge:"))
+                            .map((id) => id.slice(5)),
+                    );
+                    if (roadCursorRef.current && nodeIds.has(roadCursorRef.current)) {
+                        roadCursorRef.current = null;
+                    }
+                    return {
+                        ...current,
+                        calibration,
+                        islands: current.islands.filter((island) => !islandIds.has(island.id)),
+                        roadGraph: {
+                            edges: current.roadGraph.edges.filter(
+                                (edge) =>
+                                    !edgeIds.has(edge.id) &&
+                                    !nodeIds.has(edge.from) &&
+                                    !nodeIds.has(edge.to),
+                            ),
+                            nodes: current.roadGraph.nodes.filter((node) => !nodeIds.has(node.id)),
+                        },
+                        zones:
+                            islandIds.size > 0
+                                ? current.zones
+                                : current.zones.filter((zone) => !zoneIds.has(zone.id)),
+                    };
+                },
+                true,
+                true,
+            );
+        }
         setSelectedMarkers(new Set());
         setMessage(`已删除 ${markers.size} 个选中对象`);
     }
@@ -1896,9 +1945,21 @@ export const RoutePlannerPage: FC = () => {
                                 return (
                                     <line
                                         key={edge.id}
-                                        stroke={edge.type === "main" ? "#22d3ee" : "#a78bfa"}
+                                        stroke={
+                                            edge.type === "robot"
+                                                ? "#f97316"
+                                                : edge.type === "main"
+                                                  ? "#22d3ee"
+                                                  : "#a78bfa"
+                                        }
                                         strokeLinecap="round"
-                                        strokeWidth={(edge.type === "main" ? 5 : 3) / zoom}
+                                        strokeWidth={
+                                            (edge.type === "robot"
+                                                ? 6
+                                                : edge.type === "main"
+                                                  ? 5
+                                                  : 3) / zoom
+                                        }
                                         x1={fromPx.px}
                                         x2={toPx.px}
                                         y1={fromPx.py}
@@ -2559,12 +2620,25 @@ export const RoutePlannerPage: FC = () => {
                                     className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
                                     value={roadEdgeType}
                                     onChange={(event) =>
-                                        setRoadEdgeType(event.target.value as "inner" | "main")
+                                        setRoadEdgeType(
+                                            event.target.value as "inner" | "main" | "robot",
+                                        )
                                     }
                                 >
                                     <option value="main">主通道</option>
                                     <option value="inner">内部通道</option>
+                                    <option value="robot">机器人行进路线</option>
                                 </select>
+                                <button
+                                    className="rounded-md bg-orange-500 px-3 py-2 text-sm font-medium text-white hover:bg-orange-400"
+                                    type="button"
+                                    onClick={() => {
+                                        setRoadEdgeType("robot");
+                                        setMode("road");
+                                    }}
+                                >
+                                    标定机器人行进路线
+                                </button>
                                 <button
                                     className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
                                     type="button"
@@ -2638,6 +2712,12 @@ export const RoutePlannerPage: FC = () => {
                                     <SaveIcon className="h-4 w-4" />
                                     保存方案
                                 </button>
+                                {saveSuccessNotice && (
+                                    <div className="flex items-start gap-2 rounded-md border border-emerald-400/40 bg-emerald-400/15 p-3 text-sm text-emerald-100">
+                                        <CheckIcon className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+                                        <span>{saveSuccessNotice}</span>
+                                    </div>
+                                )}
                                 <div className="grid gap-1 rounded-md border border-white/10 bg-slate-900 p-3 text-xs text-slate-400">
                                     <div>
                                         保存内容：区域 {mapConfig.zones.length} · 犊牛岛投喂点{" "}

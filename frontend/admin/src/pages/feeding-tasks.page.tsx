@@ -341,9 +341,15 @@ export const FeedingTasksPage: FC = () => {
                                     return (
                                         <line
                                             key={edge.id}
-                                            stroke={edge.type === "main" ? "#22d3ee" : "#a78bfa"}
+                                            stroke={
+                                                edge.type === "robot"
+                                                    ? "#f97316"
+                                                    : edge.type === "main"
+                                                      ? "#22d3ee"
+                                                      : "#a78bfa"
+                                            }
                                             strokeLinecap="round"
-                                            strokeWidth={4}
+                                            strokeWidth={edge.type === "robot" ? 5 : 4}
                                             x1={fromPx.px}
                                             x2={toPx.px}
                                             y1={fromPx.py}
