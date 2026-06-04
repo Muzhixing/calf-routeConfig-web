@@ -12,7 +12,6 @@ import {
     PlusIcon,
     Redo2Icon,
     RefreshCwIcon,
-    RouteIcon,
     SaveIcon,
     TargetIcon,
     Trash2Icon,
@@ -36,7 +35,6 @@ import {
 import { LayoutContent } from "@/components/layout/layout.content.tsx";
 import {
     apiUrl,
-    buildGeneratedPath,
     type Calibration,
     DEFAULT_MAP,
     distance,
@@ -102,7 +100,6 @@ type EditSnapshot = {
     mode: Mode;
     roadCursorID: string | null;
     step: WizardStep;
-    targetIslandIDs: string[];
     zoneDraft: RealPoint[];
     zoneID: string;
 };
@@ -155,7 +152,7 @@ const STEPS: { description: string; title: string; value: WizardStep }[] = [
         value: "roads",
     },
     {
-        description: "命名地图和路线方案，选择目标岛并保存方案，投喂任务页再负责下发。",
+        description: "命名地图和路线方案，只保存区域、投喂点和通道路线。",
         title: "保存方案",
         value: "save",
     },
@@ -187,13 +184,6 @@ function lineDistance(point: RealPoint, a: RealPoint, b: RealPoint): number {
 
 function cloneJson<T>(value: T): T {
     return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function sameStringSet(items: Set<string>, values: string[]): boolean {
-    if (items.size !== values.length) {
-        return false;
-    }
-    return values.every((value) => items.has(value));
 }
 
 function nextZoneIDValue(id: string): string {
@@ -360,10 +350,7 @@ export const RoutePlannerPage: FC = () => {
     const [roadEdgeType, setRoadEdgeType] = useState<"inner" | "main">("main");
     const [selectedMarkers, setSelectedMarkers] = useState<Set<string>>(new Set());
     const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
-    const [targetIslandIDs, setTargetIslandIDs] = useState<Set<string>>(new Set());
-    const [rangeStart, setRangeStart] = useState("A1");
-    const [rangeEnd, setRangeEnd] = useState("A10");
-    const [feedAmount, setFeedAmount] = useState(500);
+    const [planNameDraft, setPlanNameDraft] = useState("");
     const [mapSaveStatus, setMapSaveStatus] = useState("等待编辑");
     const [planSaveStatus, setPlanSaveStatus] = useState("等待方案");
     const [message, setMessage] = useState("请选择历史平面图或新建地图");
@@ -382,21 +369,12 @@ export const RoutePlannerPage: FC = () => {
         () => (hasCalibration(mapConfig.calibration) ? mapConfig.calibration : null),
         [mapConfig.calibration],
     );
-    const selectedTargetIslands = useMemo(
-        () => mapConfig.islands.filter((island) => targetIslandIDs.has(island.id)),
-        [mapConfig.islands, targetIslandIDs],
-    );
     const autoGridColumnCount = useMemo(
         () => parseAutoGridCount(autoGridMaxCols),
         [autoGridMaxCols],
     );
     const autoGridRowCount = useMemo(() => parseAutoGridCount(autoGridMaxRows), [autoGridMaxRows]);
     const imageSrc = mapImageSrc(mapConfig, apiBase, imageVersion);
-    const isPathReady = Boolean(
-        currentPlan?.robotPath.length &&
-        sameStringSet(targetIslandIDs, currentPlan.targetIslandIDs || []),
-    );
-    const previewPath = isPathReady ? currentPlan?.robotPath || [] : [];
 
     const loadPlans = useCallback(
         async (mapID: string, preferredPlanID?: string) => {
@@ -422,8 +400,7 @@ export const RoutePlannerPage: FC = () => {
                 data.find((plan) => plan.planID === preferredPlanID) || data[0] || null;
             skipPlanSaveRef.current = true;
             setCurrentPlan(selected);
-            setTargetIslandIDs(new Set(selected?.targetIslandIDs || []));
-            setFeedAmount(selected?.feedAmount || 500);
+            setPlanNameDraft(selected?.name || "");
         },
         [apiBase],
     );
@@ -485,7 +462,7 @@ export const RoutePlannerPage: FC = () => {
         } else if (step === "roads") {
             setMode("road");
         } else if (step === "save") {
-            setMode("select");
+            setMode("pan");
         } else {
             setMode("pan");
         }
@@ -564,7 +541,7 @@ export const RoutePlannerPage: FC = () => {
         setMaps((items) => [saved, ...items.filter((item) => item.mapID !== saved.mapID)]);
     }
 
-    async function savePlanNow(data: RoutePlan): Promise<void> {
+    async function savePlanNow(data: RoutePlan): Promise<RoutePlan> {
         const response = await fetch(
             apiUrl(
                 apiBase,
@@ -585,6 +562,7 @@ export const RoutePlannerPage: FC = () => {
             data.mapID,
         );
         setPlans((items) => [saved, ...items.filter((item) => item.planID !== saved.planID)]);
+        return saved;
     }
 
     function createSnapshot(): EditSnapshot {
@@ -602,7 +580,6 @@ export const RoutePlannerPage: FC = () => {
             mode,
             roadCursorID: roadCursorRef.current,
             step,
-            targetIslandIDs: [...targetIslandIDs],
             zoneDraft: cloneJson(zoneDraft),
             zoneID,
         };
@@ -611,7 +588,6 @@ export const RoutePlannerPage: FC = () => {
     function restoreSnapshot(snapshot: EditSnapshot): void {
         setMapConfig(snapshot.mapConfig);
         setCurrentPlan(snapshot.currentPlan);
-        setTargetIslandIDs(new Set(snapshot.targetIslandIDs));
         setZoneDraft(snapshot.zoneDraft);
         setAutoGridAnchors(snapshot.autoGridAnchors);
         setAutoGridMaxCols(snapshot.autoGridMaxCols);
@@ -658,13 +634,6 @@ export const RoutePlannerPage: FC = () => {
         }
     }
 
-    function updatePlan(mutator: (current: RoutePlan) => RoutePlan, recordHistory = true): void {
-        if (recordHistory) {
-            pushHistory();
-        }
-        setCurrentPlan((current) => (current ? mutator(current) : current));
-    }
-
     function undoLast(): void {
         const last = history[history.length - 1];
         if (!last) {
@@ -695,20 +664,6 @@ export const RoutePlannerPage: FC = () => {
             window.clearTimeout(feedbackTimerRef.current);
         }
         feedbackTimerRef.current = window.setTimeout(() => setFeedbackPoint(null), 1200);
-    }
-
-    function applyTargetSelection(next: Set<string>): void {
-        pushHistory();
-        setTargetIslandIDs(next);
-        setCurrentPlan((plan) =>
-            plan
-                ? {
-                      ...plan,
-                      robotPath: [],
-                      targetIslandIDs: [...next],
-                  }
-                : plan,
-        );
     }
 
     async function createNewMap(): Promise<MapConfig> {
@@ -754,7 +709,7 @@ export const RoutePlannerPage: FC = () => {
         setMaps(remaining);
         setPlans([]);
         setCurrentPlan(null);
-        setTargetIslandIDs(new Set());
+        setPlanNameDraft("");
         setSelectedMarkers(new Set());
         setHistory([]);
         setFutureHistory([]);
@@ -794,7 +749,6 @@ export const RoutePlannerPage: FC = () => {
             ...normalizeMap(current),
             islands: [],
         }));
-        setTargetIslandIDs(new Set());
         setCurrentPlan((plan) =>
             plan
                 ? {
@@ -859,8 +813,6 @@ export const RoutePlannerPage: FC = () => {
             setMapConfig((current) => ({ ...current, roadGraph: { edges: [], nodes: [] } }));
             roadCursorRef.current = null;
             clearGeneratedPath();
-        } else if (step === "save") {
-            applyTargetSelection(new Set());
         }
         setSelectedMarkers(new Set());
         setMessage("当前步骤已清空");
@@ -889,7 +841,6 @@ export const RoutePlannerPage: FC = () => {
                 : plan,
         );
         setStep("upload");
-        setTargetIslandIDs(new Set());
         setZoneDraft([]);
         setAutoGridAnchors({});
         setAutoGridPick(null);
@@ -902,12 +853,12 @@ export const RoutePlannerPage: FC = () => {
             setMessage("请先创建或选择地图");
             return null;
         }
+        const fallbackName = `路线方案 ${new Date().toLocaleString("zh-CN")}`;
         const response = await fetch(
             apiUrl(apiBase, `/api/maps/${encodeURIComponent(mapConfig.mapID)}/plans`),
             {
                 body: JSON.stringify({
-                    feedAmount,
-                    name: `路线方案 ${new Date().toLocaleString("zh-CN")}`,
+                    name: planNameDraft.trim() || fallbackName,
                     robotPath: [],
                     targetIslandIDs: [],
                     ...overrides,
@@ -927,6 +878,7 @@ export const RoutePlannerPage: FC = () => {
         skipPlanSaveRef.current = true;
         setCurrentPlan(data);
         setPlans((items) => [data, ...items.filter((item) => item.planID !== data.planID)]);
+        setPlanNameDraft(data.name || "");
         return data;
     }
 
@@ -935,8 +887,45 @@ export const RoutePlannerPage: FC = () => {
         if (!data) {
             return;
         }
-        setTargetIslandIDs(new Set());
         setMessage("新路线方案已创建");
+    }
+
+    async function saveDesignPlan(): Promise<void> {
+        if (!mapConfig.mapID) {
+            setMessage("请先创建或选择地图");
+            return;
+        }
+        const name = planNameDraft.trim() || currentPlan?.name || "未命名路线方案";
+        const mapToSave = normalizeMap({ ...mapConfig, currentStep: "save" });
+        setMapSaveStatus("保存中...");
+        await saveMapNow(mapToSave);
+        skipMapSaveRef.current = true;
+        setMapConfig(mapToSave);
+        setMapSaveStatus(`已保存 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`);
+
+        setPlanSaveStatus("保存中...");
+        if (currentPlan?.planID) {
+            const saved = await savePlanNow({
+                ...currentPlan,
+                mapID: mapConfig.mapID,
+                name,
+                robotPath: [],
+                targetIslandIDs: [],
+            });
+            skipPlanSaveRef.current = true;
+            setCurrentPlan(saved);
+            setPlanNameDraft(saved.name || name);
+        } else {
+            await createPlanDraft({
+                name,
+                robotPath: [],
+                targetIslandIDs: [],
+            });
+        }
+        setPlanSaveStatus(`已保存 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`);
+        setMessage(
+            `方案已保存：区域 ${mapConfig.zones.length}、投喂点 ${mapConfig.islands.length}、通道节点 ${mapConfig.roadGraph.nodes.length}`,
+        );
     }
 
     async function uploadImage(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -1622,95 +1611,6 @@ export const RoutePlannerPage: FC = () => {
         setMessage(`${id}区已完成，可继续标下一区域或开始标犊牛岛投喂点`);
     }
 
-    function zoneIslandIDs(zoneIDValue: string): string[] {
-        return mapConfig.islands
-            .filter((island) => island.zoneID === zoneIDValue)
-            .map((island) => island.id);
-    }
-
-    function isZoneFullySelected(zoneIDValue: string): boolean {
-        const ids = zoneIslandIDs(zoneIDValue);
-        return ids.length > 0 && ids.every((id) => targetIslandIDs.has(id));
-    }
-
-    function toggleZoneSelection(zoneIDValue: string): void {
-        const ids = zoneIslandIDs(zoneIDValue);
-        if (ids.length === 0) {
-            setMessage(`${zoneIDValue}区没有可选择的犊牛岛`);
-            return;
-        }
-        const next = new Set(targetIslandIDs);
-        if (ids.every((id) => next.has(id))) {
-            ids.forEach((id) => next.delete(id));
-        } else {
-            ids.forEach((id) => next.add(id));
-        }
-        applyTargetSelection(next);
-    }
-
-    function selectRange(): void {
-        const startZone = rangeStart.match(/^[A-Z]+/i)?.[0]?.toUpperCase();
-        const endZone = rangeEnd.match(/^[A-Z]+/i)?.[0]?.toUpperCase();
-        const start = idNumber(rangeStart);
-        const end = idNumber(rangeEnd);
-        if (
-            !startZone ||
-            startZone !== endZone ||
-            !Number.isFinite(start) ||
-            !Number.isFinite(end)
-        ) {
-            setMessage("范围格式需要类似 A1 到 A10");
-            return;
-        }
-        const min = Math.min(start, end);
-        const max = Math.max(start, end);
-        applyTargetSelection(
-            new Set(
-                mapConfig.islands
-                    .filter(
-                        (island) =>
-                            island.zoneID === startZone &&
-                            idNumber(island.id) >= min &&
-                            idNumber(island.id) <= max,
-                    )
-                    .map((island) => island.id),
-            ),
-        );
-    }
-
-    async function generateAndSavePlan(): Promise<void> {
-        if (targetIslandIDs.size === 0) {
-            setMessage("请先选择需要投喂的犊牛岛");
-            return;
-        }
-        const path = buildGeneratedPath(mapConfig, selectedTargetIslands, null, feedAmount);
-        if (path.length === 0) {
-            setMessage("请先选择需要投喂的犊牛岛");
-            return;
-        }
-        const targetIDs = [...targetIslandIDs];
-        const basePlan =
-            currentPlan ||
-            (await createPlanDraft({
-                feedAmount,
-                robotPath: path,
-                targetIslandIDs: targetIDs,
-            }));
-        if (!basePlan) {
-            return;
-        }
-        const next = {
-            ...basePlan,
-            feedAmount,
-            mapID: mapConfig.mapID,
-            robotPath: path,
-            targetIslandIDs: targetIDs,
-        };
-        setCurrentPlan(next);
-        setPlans((items) => [next, ...items.filter((item) => item.planID !== next.planID)]);
-        setMessage(`路线方案已生成 ${path.length} 个路径点`);
-    }
-
     const savedZoneIDs = useMemo(
         () => mapConfig.zones.map((zone) => zone.id).sort(),
         [mapConfig.zones],
@@ -1907,20 +1807,6 @@ export const RoutePlannerPage: FC = () => {
                             width={imageSize.width}
                             xmlns="http://www.w3.org/2000/svg"
                         >
-                            <defs>
-                                <marker
-                                    id="route-direction-arrow"
-                                    markerHeight="5"
-                                    markerUnits="strokeWidth"
-                                    markerWidth="5"
-                                    orient="auto"
-                                    refX="4.5"
-                                    refY="2.5"
-                                    viewBox="0 0 5 5"
-                                >
-                                    <path d="M 0 0 L 5 2.5 L 0 5 z" fill="#2563eb" />
-                                </marker>
-                            </defs>
                             {mapConfig.zones.map((zone) => {
                                 const points = zone.polygon.map((point) =>
                                     realToPixel(point, activeCalibration),
@@ -2039,19 +1925,12 @@ export const RoutePlannerPage: FC = () => {
                             {mapConfig.islands.map((island) => {
                                 const center = realToPixel(island.center, activeCalibration);
                                 const selected = selectedMarkers.has(`island:${island.id}`);
-                                const target = targetIslandIDs.has(island.id);
                                 return (
                                     <g key={island.id}>
                                         <circle
                                             cx={center.px}
                                             cy={center.py}
-                                            fill={
-                                                target
-                                                    ? "#f97316"
-                                                    : selected
-                                                      ? "#facc15"
-                                                      : "#22c55e"
-                                            }
+                                            fill={selected ? "#facc15" : "#22c55e"}
                                             r={7 / zoom}
                                             stroke="#020617"
                                             strokeWidth={2 / zoom}
@@ -2071,41 +1950,6 @@ export const RoutePlannerPage: FC = () => {
                                     </g>
                                 );
                             })}
-                            {previewPath.length > 1 && (
-                                <g>
-                                    <polyline
-                                        fill="none"
-                                        points={previewPath
-                                            .map((point) => realToPixel(point, activeCalibration))
-                                            .map((point) => `${point.px},${point.py}`)
-                                            .join(" ")}
-                                        stroke="rgba(37, 99, 235, 0.22)"
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={4 / zoom}
-                                    />
-                                    {previewPath.slice(1).map((point, index) => {
-                                        const from = realToPixel(
-                                            previewPath[index],
-                                            activeCalibration,
-                                        );
-                                        const to = realToPixel(point, activeCalibration);
-                                        return (
-                                            <line
-                                                key={`${point.seq}-${index}`}
-                                                markerEnd="url(#route-direction-arrow)"
-                                                stroke="#2563eb"
-                                                strokeLinecap="round"
-                                                strokeWidth={2.5 / zoom}
-                                                x1={from.px}
-                                                x2={to.px}
-                                                y1={from.py}
-                                                y2={to.py}
-                                            />
-                                        );
-                                    })}
-                                </g>
-                            )}
                             {mapConfig.calibration &&
                                 (["p1", "p2"] as const).map((key, index) => {
                                     const point = mapConfig.calibration?.[key];
@@ -2739,8 +2583,8 @@ export const RoutePlannerPage: FC = () => {
                         )}
                         {step === "save" && (
                             <div className="grid gap-3">
-                                <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
-                                    可下发路径是投喂任务页能够直接下发给板卡的路径点列表。选择目标犊牛岛后点击“生成可下发路径”，目标岛或投喂量变化后需要重新生成。
+                                <div className="rounded-md border border-cyan-400/30 bg-cyan-400/10 p-3 text-xs text-cyan-100">
+                                    保存方案只保存当前平面图中的区域、犊牛岛投喂点和通道路线。投喂目标选择、投喂量和任务下发在“投喂任务”页面完成。
                                 </div>
                                 <div className="grid grid-cols-[1fr_auto] gap-2">
                                     <select
@@ -2753,9 +2597,7 @@ export const RoutePlannerPage: FC = () => {
                                                 ) || null;
                                             skipPlanSaveRef.current = true;
                                             setCurrentPlan(plan);
-                                            setTargetIslandIDs(
-                                                new Set(plan?.targetIslandIDs || []),
-                                            );
+                                            setPlanNameDraft(plan?.name || "");
                                         }}
                                     >
                                         <option value="">选择历史路线方案</option>
@@ -2780,122 +2622,32 @@ export const RoutePlannerPage: FC = () => {
                                 <input
                                     className="rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm"
                                     placeholder="路线方案名称"
-                                    value={currentPlan?.name || ""}
-                                    onChange={(event) =>
-                                        updatePlan((plan) => ({
-                                            ...plan,
-                                            name: event.target.value,
-                                        }))
-                                    }
+                                    value={planNameDraft}
+                                    onChange={(event) => setPlanNameDraft(event.target.value)}
                                 />
-                                <div className="grid grid-cols-2 gap-2 text-sm">
-                                    <input
-                                        className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
-                                        type="number"
-                                        value={feedAmount}
-                                        onChange={(event) => {
-                                            const nextAmount = Number(event.target.value) || 0;
-                                            setFeedAmount(nextAmount);
-                                            updatePlan((plan) => ({
-                                                ...plan,
-                                                feedAmount: nextAmount,
-                                                robotPath: [],
-                                            }));
-                                        }}
-                                    />
-                                    <button
-                                        className="rounded-md bg-slate-800 px-3 py-2 hover:bg-slate-700"
-                                        type="button"
-                                        onClick={selectRange}
-                                    >
-                                        选择范围
-                                    </button>
-                                    <input
-                                        className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
-                                        value={rangeStart}
-                                        onChange={(event) =>
-                                            setRangeStart(event.target.value.toUpperCase())
-                                        }
-                                    />
-                                    <input
-                                        className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
-                                        value={rangeEnd}
-                                        onChange={(event) =>
-                                            setRangeEnd(event.target.value.toUpperCase())
-                                        }
-                                    />
-                                </div>
-                                <div className="grid gap-2 rounded-md border border-white/10 bg-slate-900 p-2">
-                                    <div className="text-xs text-slate-500">
-                                        选择区域全部（可多选）
-                                    </div>
-                                    <div className="flex flex-wrap gap-2">
-                                        {savedZoneIDs.length === 0 && (
-                                            <span className="text-xs text-slate-400">
-                                                请先保存区域
-                                            </span>
-                                        )}
-                                        {savedZoneIDs.map((zone) => {
-                                            const active = isZoneFullySelected(zone);
-                                            return (
-                                                <button
-                                                    key={zone}
-                                                    className={`rounded-md px-2 py-1 text-xs ${
-                                                        active
-                                                            ? "bg-cyan-400 text-slate-950"
-                                                            : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                                    }`}
-                                                    type="button"
-                                                    onClick={() => toggleZoneSelection(zone)}
-                                                >
-                                                    {zone}区全部
-                                                </button>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                                <div className="max-h-24 overflow-auto rounded-md bg-slate-900 p-2">
-                                    <div className="flex flex-wrap gap-2">
-                                        {mapConfig.islands.map((island) => (
-                                            <button
-                                                key={island.id}
-                                                className={`rounded-md px-2 py-1 text-xs ${targetIslandIDs.has(island.id) ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-300"}`}
-                                                type="button"
-                                                onClick={() => {
-                                                    const next = new Set(targetIslandIDs);
-                                                    if (next.has(island.id)) {
-                                                        next.delete(island.id);
-                                                    } else {
-                                                        next.add(island.id);
-                                                    }
-                                                    applyTargetSelection(next);
-                                                }}
-                                            >
-                                                {island.id}
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
                                 <button
                                     className="inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
-                                    disabled={targetIslandIDs.size === 0}
+                                    disabled={!mapConfig.mapID}
                                     type="button"
                                     onClick={() =>
-                                        void generateAndSavePlan().catch((error) =>
+                                        void saveDesignPlan().catch((error) =>
                                             setMessage(String(error)),
                                         )
                                     }
                                 >
-                                    <RouteIcon className="h-4 w-4" />
-                                    生成可下发路径
+                                    <SaveIcon className="h-4 w-4" />
+                                    保存方案
                                 </button>
-                                <div className="text-xs text-slate-400">
-                                    {planSaveStatus} ·{" "}
-                                    {isPathReady
-                                        ? `可下发路径已生成，路径点 ${previewPath.length}`
-                                        : targetIslandIDs.size
-                                          ? "目标已选择，请生成可下发路径"
-                                          : "请选择目标犊牛岛"}
+                                <div className="grid gap-1 rounded-md border border-white/10 bg-slate-900 p-3 text-xs text-slate-400">
+                                    <div>
+                                        保存内容：区域 {mapConfig.zones.length} · 犊牛岛投喂点{" "}
+                                        {mapConfig.islands.length} · 通道节点{" "}
+                                        {mapConfig.roadGraph.nodes.length} · 通道边{" "}
+                                        {mapConfig.roadGraph.edges.length}
+                                    </div>
+                                    <div>
+                                        地图：{mapSaveStatus} · 方案：{planSaveStatus}
+                                    </div>
                                 </div>
                             </div>
                         )}
@@ -2926,9 +2678,7 @@ export const RoutePlannerPage: FC = () => {
                             通道节点 {mapConfig.roadGraph.nodes.length} · 通道边{" "}
                             {mapConfig.roadGraph.edges.length}
                         </div>
-                        <div>
-                            目标岛 {targetIslandIDs.size} · 当前方案 {currentPlan?.name || "-"}
-                        </div>
+                        <div>当前方案 {currentPlan?.name || planNameDraft || "-"}</div>
                     </section>
                 </aside>
             </div>
