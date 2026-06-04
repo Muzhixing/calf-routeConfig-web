@@ -8,6 +8,7 @@ import {
     createTaskPayload,
     formatMl,
     hasCalibration,
+    idNumber,
     isVehicleOnline,
     mapImageSrc,
     type MapConfig,
@@ -29,6 +30,9 @@ export const FeedingTasksPage: FC = () => {
     const [vehicles, setVehicles] = useState<VehicleStatus[]>([]);
     const [deviceID, setDeviceID] = useState("robot001");
     const [feedAmount, setFeedAmount] = useState(500);
+    const [rangeEnd, setRangeEnd] = useState("A10");
+    const [rangeStart, setRangeStart] = useState("A1");
+    const [selectedTargetIDs, setSelectedTargetIDs] = useState<Set<string>>(new Set());
     const [taskName, setTaskName] = useState(`投喂任务 ${new Date().toLocaleString("zh-CN")}`);
     const [imageSize, setImageSize] = useState({ height: 720, width: 960 });
     const [imageVersion] = useState(Date.now());
@@ -51,6 +55,7 @@ export const FeedingTasksPage: FC = () => {
             setPlans(data);
             setCurrentPlan(data[0] || null);
             setFeedAmount(data[0]?.feedAmount || 500);
+            setSelectedTargetIDs(new Set(data[0]?.targetIslandIDs || []));
         },
         [apiBase],
     );
@@ -118,31 +123,80 @@ export const FeedingTasksPage: FC = () => {
         [deviceID, vehicles],
     );
 
+    const zoneIDs = useMemo(
+        () => [...new Set((mapConfig?.islands || []).map((island) => island.zoneID))].sort(),
+        [mapConfig?.islands],
+    );
+
+    const sortedIslands = useMemo(
+        () =>
+            [...(mapConfig?.islands || [])].sort((a, b) => {
+                const zone = a.zoneID.localeCompare(b.zoneID, undefined, { numeric: true });
+                if (zone !== 0) {
+                    return zone;
+                }
+                const aNumber = idNumber(a.id);
+                const bNumber = idNumber(b.id);
+                if (Number.isFinite(aNumber) && Number.isFinite(bNumber)) {
+                    return aNumber - bNumber;
+                }
+                return a.id.localeCompare(b.id, undefined, { numeric: true });
+            }),
+        [mapConfig?.islands],
+    );
+
+    const selectedIslands = useMemo(
+        () => sortedIslands.filter((island) => selectedTargetIDs.has(island.id)),
+        [selectedTargetIDs, sortedIslands],
+    );
+
     const previewPath = useMemo(() => {
-        if (!mapConfig || !currentPlan) {
+        if (!mapConfig || selectedIslands.length === 0) {
             return [];
         }
-        if (currentPlan.robotPath.length > 0) {
-            return currentPlan.robotPath;
-        }
-        const selectedIslands = mapConfig.islands.filter((island) =>
-            currentPlan.targetIslandIDs.includes(island.id),
-        );
         return buildGeneratedPath(mapConfig, selectedIslands, selectedVehicle, feedAmount);
-    }, [currentPlan, feedAmount, mapConfig, selectedVehicle]);
+    }, [feedAmount, mapConfig, selectedIslands, selectedVehicle]);
+
+    const routeStatus = useMemo(() => {
+        if (!mapConfig) {
+            return "请选择地图";
+        }
+        if (!currentPlan) {
+            return "请选择路线方案";
+        }
+        if (selectedTargetIDs.size === 0) {
+            return "请选择目标犊牛岛";
+        }
+        if (mapConfig.roadGraph.nodes.length === 0 || mapConfig.roadGraph.edges.length === 0) {
+            return "当前地图没有通道路线，无法生成沿路路径";
+        }
+        if (previewPath.length === 0) {
+            return "无法沿通道到达目标，请检查通道是否连通并靠近目标岛";
+        }
+        return `已生成沿通道行驶路径 ${previewPath.length} 个点`;
+    }, [currentPlan, mapConfig, previewPath.length, selectedTargetIDs.size]);
 
     async function submitTask(): Promise<void> {
         if (!mapConfig || !currentPlan) {
             setMessage("请先选择地图和路线方案");
             return;
         }
-        if (previewPath.length === 0) {
-            setMessage("当前路线方案没有可下发路径");
+        if (selectedTargetIDs.size === 0) {
+            setMessage("请先选择目标犊牛岛");
             return;
         }
+        if (previewPath.length === 0) {
+            setMessage("无法生成沿通道的可下发路径，请检查通道路线和目标岛");
+            return;
+        }
+        const taskPlan = {
+            ...currentPlan,
+            robotPath: previewPath,
+            targetIslandIDs: [...selectedTargetIDs],
+        };
         const payload = createTaskPayload(
             mapConfig,
-            currentPlan,
+            taskPlan,
             previewPath,
             deviceID,
             feedAmount,
@@ -164,13 +218,66 @@ export const FeedingTasksPage: FC = () => {
     const activeCalibration =
         mapConfig && hasCalibration(mapConfig.calibration) ? mapConfig.calibration : null;
 
+    function zoneIslandIDs(zoneID: string): string[] {
+        return sortedIslands
+            .filter((island) => island.zoneID === zoneID)
+            .map((island) => island.id);
+    }
+
+    function isZoneFullySelected(zoneID: string): boolean {
+        const ids = zoneIslandIDs(zoneID);
+        return ids.length > 0 && ids.every((id) => selectedTargetIDs.has(id));
+    }
+
+    function toggleZoneSelection(zoneID: string): void {
+        const ids = zoneIslandIDs(zoneID);
+        if (ids.length === 0) {
+            setMessage(`${zoneID}区没有犊牛岛`);
+            return;
+        }
+        const next = new Set(selectedTargetIDs);
+        if (ids.every((id) => next.has(id))) {
+            ids.forEach((id) => next.delete(id));
+        } else {
+            ids.forEach((id) => next.add(id));
+        }
+        setSelectedTargetIDs(next);
+    }
+
+    function selectRange(): void {
+        const startZone = rangeStart.match(/^[A-Z]+/i)?.[0]?.toUpperCase();
+        const endZone = rangeEnd.match(/^[A-Z]+/i)?.[0]?.toUpperCase();
+        const start = idNumber(rangeStart);
+        const end = idNumber(rangeEnd);
+        if (
+            !startZone ||
+            startZone !== endZone ||
+            !Number.isFinite(start) ||
+            !Number.isFinite(end)
+        ) {
+            setMessage("范围格式需要类似 A1 到 A10，且必须在同一区域");
+            return;
+        }
+        const min = Math.min(start, end);
+        const max = Math.max(start, end);
+        const next = new Set(selectedTargetIDs);
+        sortedIslands
+            .filter(
+                (island) =>
+                    island.zoneID === startZone &&
+                    idNumber(island.id) >= min &&
+                    idNumber(island.id) <= max,
+            )
+            .forEach((island) => next.add(island.id));
+        setSelectedTargetIDs(next);
+    }
+
     return (
         <LayoutContent fixed className="h-[calc(100vh-4rem)]">
             <div className="ops-workspace grid h-full grid-cols-[minmax(0,1fr)_400px] text-slate-100 max-xl:grid-cols-1">
                 <main className="ops-map-surface relative min-h-[620px] overflow-hidden border-r border-white/10 bg-slate-950">
                     <div className="ops-toolbar absolute left-4 top-4 z-20 rounded-md border border-white/10 bg-slate-900/90 px-3 py-2 text-sm">
-                        路径点 {previewPath.length} · 目标岛{" "}
-                        {currentPlan?.targetIslandIDs.length || 0}
+                        路径点 {previewPath.length} · 目标岛 {selectedTargetIDs.size}
                     </div>
                     <div
                         className="absolute left-8 top-16 origin-top-left"
@@ -205,6 +312,20 @@ export const FeedingTasksPage: FC = () => {
                                 width={imageSize.width}
                                 xmlns="http://www.w3.org/2000/svg"
                             >
+                                <defs>
+                                    <marker
+                                        id="feeding-route-arrow"
+                                        markerHeight="5"
+                                        markerUnits="strokeWidth"
+                                        markerWidth="5"
+                                        orient="auto"
+                                        refX="4.5"
+                                        refY="2.5"
+                                        viewBox="0 0 5 5"
+                                    >
+                                        <path d="M 0 0 L 5 2.5 L 0 5 z" fill="#f97316" />
+                                    </marker>
+                                </defs>
                                 {mapConfig.roadGraph.edges.map((edge) => {
                                     const from = mapConfig.roadGraph.nodes.find(
                                         (node) => node.id === edge.from,
@@ -232,7 +353,7 @@ export const FeedingTasksPage: FC = () => {
                                 })}
                                 {mapConfig.islands.map((island) => {
                                     const center = realToPixel(island.center, activeCalibration);
-                                    const target = currentPlan?.targetIslandIDs.includes(island.id);
+                                    const target = selectedTargetIDs.has(island.id);
                                     return (
                                         <g key={island.id}>
                                             <circle
@@ -259,17 +380,41 @@ export const FeedingTasksPage: FC = () => {
                                     );
                                 })}
                                 {previewPath.length > 1 && (
-                                    <polyline
-                                        fill="none"
-                                        points={previewPath
-                                            .map((point) => realToPixel(point, activeCalibration))
-                                            .map((point) => `${point.px},${point.py}`)
-                                            .join(" ")}
-                                        stroke="#f97316"
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={6}
-                                    />
+                                    <g>
+                                        <polyline
+                                            fill="none"
+                                            points={previewPath
+                                                .map((point) =>
+                                                    realToPixel(point, activeCalibration),
+                                                )
+                                                .map((point) => `${point.px},${point.py}`)
+                                                .join(" ")}
+                                            stroke="rgba(249, 115, 22, 0.24)"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={7}
+                                        />
+                                        {previewPath.slice(1).map((point, index) => {
+                                            const from = realToPixel(
+                                                previewPath[index],
+                                                activeCalibration,
+                                            );
+                                            const to = realToPixel(point, activeCalibration);
+                                            return (
+                                                <line
+                                                    key={`${point.seq}-${index}`}
+                                                    markerEnd="url(#feeding-route-arrow)"
+                                                    stroke="#f97316"
+                                                    strokeLinecap="round"
+                                                    strokeWidth={3}
+                                                    x1={from.px}
+                                                    x2={to.px}
+                                                    y1={from.py}
+                                                    y2={to.py}
+                                                />
+                                            );
+                                        })}
+                                    </g>
                                 )}
                                 {vehicles.map((vehicle) => {
                                     if (vehicle.location_x == null || vehicle.location_y == null) {
@@ -315,7 +460,7 @@ export const FeedingTasksPage: FC = () => {
                         <div>
                             <h1 className="text-lg font-semibold">投喂任务</h1>
                             <div className="mt-1 text-xs text-slate-400">
-                                选择路径规划生成的地图和路线方案后下发
+                                选择地图、路线方案和目标岛，系统沿已标定通道生成任务路径
                             </div>
                         </div>
                         <button
@@ -361,6 +506,7 @@ export const FeedingTasksPage: FC = () => {
                                         null;
                                     setCurrentPlan(plan);
                                     setFeedAmount(plan?.feedAmount || 500);
+                                    setSelectedTargetIDs(new Set(plan?.targetIslandIDs || []));
                                 }}
                             >
                                 <option value="">选择路线方案</option>
@@ -384,6 +530,105 @@ export const FeedingTasksPage: FC = () => {
                                 />
                             </label>
                         </details>
+                    </section>
+
+                    <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
+                        <div>
+                            <div className="text-sm font-medium">目标犊牛岛</div>
+                            <div className="mt-1 text-xs text-slate-500">
+                                目标岛只表示要投喂的“房子”，车辆路径会吸附到最近通道，并沿已画通道最短路行驶。
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-[1fr_1fr_auto] gap-2 text-sm">
+                            <input
+                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
+                                placeholder="起点，如 A1"
+                                value={rangeStart}
+                                onChange={(event) =>
+                                    setRangeStart(event.target.value.toUpperCase())
+                                }
+                            />
+                            <input
+                                className="rounded-md border border-white/10 bg-slate-900 px-3 py-2"
+                                placeholder="终点，如 A10"
+                                value={rangeEnd}
+                                onChange={(event) => setRangeEnd(event.target.value.toUpperCase())}
+                            />
+                            <button
+                                className="rounded-md bg-slate-800 px-3 py-2 hover:bg-slate-700"
+                                type="button"
+                                onClick={selectRange}
+                            >
+                                选择范围
+                            </button>
+                        </div>
+                        <div className="grid gap-2">
+                            <div className="text-xs text-slate-500">区域全部（可多选）</div>
+                            <div className="flex flex-wrap gap-2">
+                                {zoneIDs.length === 0 && (
+                                    <span className="text-xs text-slate-400">
+                                        当前地图还没有犊牛岛
+                                    </span>
+                                )}
+                                {zoneIDs.map((zone) => {
+                                    const active = isZoneFullySelected(zone);
+                                    return (
+                                        <button
+                                            key={zone}
+                                            className={`rounded-md px-2 py-1 text-xs ${
+                                                active
+                                                    ? "bg-cyan-400 text-slate-950"
+                                                    : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                                            }`}
+                                            type="button"
+                                            onClick={() => toggleZoneSelection(zone)}
+                                        >
+                                            {zone}区全部
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        <div className="max-h-32 overflow-auto rounded-md bg-slate-900 p-2">
+                            <div className="flex flex-wrap gap-2">
+                                {sortedIslands.map((island) => {
+                                    const active = selectedTargetIDs.has(island.id);
+                                    return (
+                                        <button
+                                            key={island.id}
+                                            className={`rounded-md px-2 py-1 text-xs ${
+                                                active
+                                                    ? "bg-cyan-400 text-slate-950"
+                                                    : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                                            }`}
+                                            type="button"
+                                            onClick={() => {
+                                                const next = new Set(selectedTargetIDs);
+                                                if (next.has(island.id)) {
+                                                    next.delete(island.id);
+                                                } else {
+                                                    next.add(island.id);
+                                                }
+                                                setSelectedTargetIDs(next);
+                                            }}
+                                        >
+                                            {island.id}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
+                            <span>{routeStatus}</span>
+                            <button
+                                className="rounded-md bg-slate-800 px-2 py-1 hover:bg-slate-700 disabled:opacity-40"
+                                disabled={selectedTargetIDs.size === 0}
+                                type="button"
+                                onClick={() => setSelectedTargetIDs(new Set())}
+                            >
+                                清空目标
+                            </button>
+                        </div>
                     </section>
 
                     <section className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-3">
@@ -442,8 +687,9 @@ export const FeedingTasksPage: FC = () => {
                             地图 {mapConfig?.name || "-"} · 方案 {currentPlan?.name || "-"}
                         </div>
                         <div className="text-xs text-slate-400">
-                            目标岛 {(currentPlan?.targetIslandIDs || []).join(", ") || "-"}
+                            目标岛 {[...selectedTargetIDs].join(", ") || "-"}
                         </div>
+                        <div className="text-xs text-slate-400">{routeStatus}</div>
                         <ol className="max-h-40 overflow-auto rounded-md bg-slate-900 p-2 text-xs text-slate-400">
                             {previewPath.map((point) => (
                                 <li key={`${point.seq}-${point.x}-${point.y}`}>

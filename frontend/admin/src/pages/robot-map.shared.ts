@@ -275,6 +275,95 @@ export function findNearestNode(graph: RoadGraph, point: RealPoint): RoadNode | 
     }, null);
 }
 
+type RoadAnchor = {
+    edgeID?: string;
+    edges: { to: string; weight: number }[];
+    id: string;
+    point: RealPoint;
+    virtual: boolean;
+};
+
+type RoadPathStep = RealPoint & {
+    nodeID?: string;
+};
+
+type RoadProjection = {
+    edgeID: string;
+    from: RoadNode;
+    point: RealPoint & { t: number };
+    to: RoadNode;
+};
+
+function addUndirectedEdge(
+    adjacency: Map<string, { id: string; weight: number }[]>,
+    from: string,
+    to: string,
+    weight: number,
+): void {
+    adjacency.set(from, [...(adjacency.get(from) || []), { id: to, weight }]);
+    adjacency.set(to, [...(adjacency.get(to) || []), { id: from, weight }]);
+}
+
+function projectPointToSegment(
+    point: RealPoint,
+    from: RealPoint,
+    to: RealPoint,
+): RealPoint & {
+    t: number;
+} {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const lengthSq = dx * dx + dy * dy;
+    const t =
+        lengthSq <= 0.000001
+            ? 0
+            : Math.max(
+                  0,
+                  Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSq),
+              );
+    return {
+        t,
+        x: roundMeter(from.x + dx * t),
+        y: roundMeter(from.y + dy * t),
+    };
+}
+
+function nearestRoadAnchor(graph: RoadGraph, point: RealPoint, id: string): RoadAnchor | null {
+    const nodes = nodeMap(graph);
+    let best: RoadProjection | null = null;
+    for (const edge of graph.edges) {
+        const from = nodes.get(edge.from);
+        const to = nodes.get(edge.to);
+        if (!from || !to) {
+            continue;
+        }
+        const projected = projectPointToSegment(point, from, to);
+        if (!best || distance(projected, point) < distance(best.point, point)) {
+            best = { edgeID: edge.id, from, point: projected, to };
+        }
+    }
+    if (best) {
+        if (best.point.t <= 0.001) {
+            return { edges: [], id: best.from.id, point: best.from, virtual: false };
+        }
+        if (best.point.t >= 0.999) {
+            return { edges: [], id: best.to.id, point: best.to, virtual: false };
+        }
+        return {
+            edgeID: best.edgeID,
+            edges: [
+                { to: best.from.id, weight: distance(best.point, best.from) },
+                { to: best.to.id, weight: distance(best.point, best.to) },
+            ],
+            id,
+            point: best.point,
+            virtual: true,
+        };
+    }
+    const nearest = findNearestNode(graph, point);
+    return nearest ? { edges: [], id: nearest.id, point: nearest, virtual: false } : null;
+}
+
 export function shortestNodePath(graph: RoadGraph, startId: string, endId: string): string[] {
     if (startId === endId) {
         return [startId];
@@ -327,14 +416,14 @@ export function shortestNodePath(graph: RoadGraph, startId: string, endId: strin
     }
 
     if (!prev.has(endId) && startId !== endId) {
-        return [startId, endId];
+        return [];
     }
     const path = [endId];
     let cursor = endId;
     while (cursor !== startId) {
         const previous = prev.get(cursor);
         if (!previous) {
-            return [startId, endId];
+            return [];
         }
         path.unshift(previous);
         cursor = previous;
@@ -345,11 +434,124 @@ export function shortestNodePath(graph: RoadGraph, startId: string, endId: strin
 export function pathDistance(graph: RoadGraph, startId: string, endId: string): number {
     const nodes = nodeMap(graph);
     const path = shortestNodePath(graph, startId, endId);
+    if (path.length === 0) {
+        return Number.POSITIVE_INFINITY;
+    }
     return path.slice(1).reduce((sum, id, index) => {
         const from = nodes.get(path[index]);
         const to = nodes.get(id);
         return from && to ? sum + distance(from, to) : sum;
     }, 0);
+}
+
+function shortestRoadPathSteps(
+    graph: RoadGraph,
+    startPoint: RealPoint,
+    targetPoint: RealPoint,
+): RoadPathStep[] {
+    if (graph.nodes.length === 0 || graph.edges.length === 0) {
+        return [];
+    }
+    const baseNodes = nodeMap(graph);
+    const start = nearestRoadAnchor(graph, startPoint, "__route_start");
+    const target = nearestRoadAnchor(graph, targetPoint, "__route_target");
+    if (!start || !target) {
+        return [];
+    }
+
+    const points = new Map<string, RealPoint>();
+    graph.nodes.forEach((node) => points.set(node.id, node));
+    if (start.virtual) {
+        points.set(start.id, start.point);
+    }
+    if (target.virtual) {
+        points.set(target.id, target.point);
+    }
+
+    const adjacency = new Map<string, { id: string; weight: number }[]>();
+    points.forEach((_, id) => adjacency.set(id, []));
+    graph.edges.forEach((edge) => {
+        const from = baseNodes.get(edge.from);
+        const to = baseNodes.get(edge.to);
+        if (!from || !to) {
+            return;
+        }
+        addUndirectedEdge(adjacency, edge.from, edge.to, distance(from, to));
+    });
+    if (start.virtual) {
+        start.edges.forEach((edge) => addUndirectedEdge(adjacency, start.id, edge.to, edge.weight));
+    }
+    if (target.virtual) {
+        target.edges.forEach((edge) =>
+            addUndirectedEdge(adjacency, target.id, edge.to, edge.weight),
+        );
+    }
+    if (start.virtual && target.virtual && start.edgeID && start.edgeID === target.edgeID) {
+        addUndirectedEdge(adjacency, start.id, target.id, distance(start.point, target.point));
+    }
+
+    const startId = start.id;
+    const targetId = target.id;
+    if (startId === targetId) {
+        return [{ ...start.point, nodeID: start.virtual ? undefined : startId }];
+    }
+
+    const dist = new Map<string, number>();
+    const prev = new Map<string, string>();
+    const unvisited = new Set(points.keys());
+    points.forEach((_, id) => dist.set(id, Number.POSITIVE_INFINITY));
+    dist.set(startId, 0);
+
+    while (unvisited.size > 0) {
+        let current: string | null = null;
+        unvisited.forEach((id) => {
+            if (
+                current === null ||
+                (dist.get(id) || Number.POSITIVE_INFINITY) <
+                    (dist.get(current) || Number.POSITIVE_INFINITY)
+            ) {
+                current = id;
+            }
+        });
+        if (current === null || current === targetId) {
+            break;
+        }
+        if ((dist.get(current) || Number.POSITIVE_INFINITY) === Number.POSITIVE_INFINITY) {
+            break;
+        }
+        unvisited.delete(current);
+        adjacency.get(current)?.forEach((next) => {
+            if (!unvisited.has(next.id)) {
+                return;
+            }
+            const candidate = (dist.get(current as string) || 0) + next.weight;
+            if (candidate < (dist.get(next.id) || Number.POSITIVE_INFINITY)) {
+                dist.set(next.id, candidate);
+                prev.set(next.id, current as string);
+            }
+        });
+    }
+
+    if (!prev.has(targetId)) {
+        return [];
+    }
+    const path = [targetId];
+    let cursor = targetId;
+    while (cursor !== startId) {
+        const previous = prev.get(cursor);
+        if (!previous) {
+            return [];
+        }
+        path.unshift(previous);
+        cursor = previous;
+    }
+
+    return path
+        .map<RoadPathStep | null>((id) => {
+            const point = points.get(id);
+            return point ? { ...point, nodeID: baseNodes.has(id) ? id : undefined } : null;
+        })
+        .filter((point): point is RoadPathStep => point !== null);
 }
 
 export function nextIslandID(current: string): string {
@@ -499,74 +701,51 @@ export function buildGeneratedPath(
     if (selectedIslands.length === 0) {
         return [];
     }
+    if (mapConfig.roadGraph.nodes.length === 0 || mapConfig.roadGraph.edges.length === 0) {
+        return [];
+    }
 
     const feedPoint = (island: Island): RealPoint => island.center;
     const startPoint =
         vehicle?.location_x != null && vehicle.location_y != null
             ? { x: vehicle.location_x, y: vehicle.location_y }
-            : mapConfig.roadGraph.nodes[0] || feedPoint(selectedIslands[0]);
+            : mapConfig.roadGraph.nodes[0];
+    const startRoad = shortestRoadPathSteps(mapConfig.roadGraph, startPoint, startPoint)[0];
+    if (!startRoad) {
+        return [];
+    }
     const orderedIslands = orderIslandsForCoverage(selectedIslands, startPoint);
     const points: GeneratedPoint[] = [];
     appendUnique(points, {
         action: "start",
-        x: roundMeter(startPoint.x),
-        y: roundMeter(startPoint.y),
+        nodeID: startRoad.nodeID,
+        x: roundMeter(startRoad.x),
+        y: roundMeter(startRoad.y),
     });
 
-    if (mapConfig.roadGraph.nodes.length === 0) {
-        orderedIslands.forEach((island) => {
-            const target = feedPoint(island);
-            appendUnique(points, {
-                action: "feed",
-                feedAmount,
-                targetIslandID: island.id,
-                x: target.x,
-                y: target.y,
-            });
-        });
-        return points;
-    }
-
-    const nodes = nodeMap(mapConfig.roadGraph);
-    let currentNode = findNearestNode(mapConfig.roadGraph, startPoint);
-    if (currentNode) {
-        appendUnique(points, {
-            action: "pass",
-            nodeID: currentNode.id,
-            x: currentNode.x,
-            y: currentNode.y,
-        });
-    }
+    let cursor = startRoad;
     for (const island of orderedIslands) {
-        if (!currentNode) {
-            break;
+        const roadSteps = shortestRoadPathSteps(mapConfig.roadGraph, cursor, feedPoint(island));
+        if (roadSteps.length === 0) {
+            return [];
         }
-        const target = feedPoint(island);
-        const targetNode = findNearestNode(mapConfig.roadGraph, target);
-        if (!targetNode) {
+        roadSteps.slice(1, -1).forEach((step) => {
             appendUnique(points, {
-                action: "feed",
-                feedAmount,
-                targetIslandID: island.id,
-                x: target.x,
-                y: target.y,
+                action: "pass",
+                nodeID: step.nodeID,
+                x: roundMeter(step.x),
+                y: roundMeter(step.y),
             });
-            continue;
-        }
-        shortestNodePath(mapConfig.roadGraph, currentNode.id, targetNode.id).forEach((nodeId) => {
-            const node = nodes.get(nodeId);
-            if (node) {
-                appendUnique(points, { action: "pass", nodeID: node.id, x: node.x, y: node.y });
-            }
         });
+        const stop = roadSteps[roadSteps.length - 1];
         appendUnique(points, {
             action: "feed",
             feedAmount,
             targetIslandID: island.id,
-            x: target.x,
-            y: target.y,
+            x: roundMeter(stop.x),
+            y: roundMeter(stop.y),
         });
-        currentNode = targetNode;
+        cursor = stop;
     }
     return points;
 }
