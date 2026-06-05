@@ -310,10 +310,10 @@ function stepHelp(step: WizardStep): string[] {
     }
     if (step === "roads") {
         return [
-            "通道模式沿道路中心逐点点击，系统按顺序连线。",
-            "主通道/内部通道用于描述道路网络；机器人行进路线用于标出车辆实际可走的重点路线。",
-            "平移后点击继续标定通道路线即可恢复通道标点。",
-            "点击断开连线后可从另一段通道重新开始，右键节点或边可删除。",
+            "先点击路口节点作为连接起点，再点击另一个路口节点建立通路。",
+            "同一个路口节点可以反复作为起点，连接三个或四个方向的通路。",
+            "需要分叉时点击“选择新的连接起点”，再点已有路口节点继续连接。",
+            "右键节点或边可删除；视觉上交叉的线不算连通，必须共用节点。",
         ];
     }
     return [
@@ -350,6 +350,7 @@ export const RoutePlannerPage: FC = () => {
     const [islandID, setIslandID] = useState("A1");
     const [islandZoneID, setIslandZoneID] = useState("A");
     const [roadEdgeType, setRoadEdgeType] = useState<"inner" | "main" | "robot">("main");
+    const [roadCursorID, setRoadCursorID] = useState<string | null>(null);
     const [selectedMarkers, setSelectedMarkers] = useState<Set<string>>(new Set());
     const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
     const [planNameDraft, setPlanNameDraft] = useState("");
@@ -378,6 +379,10 @@ export const RoutePlannerPage: FC = () => {
     );
     const autoGridRowCount = useMemo(() => parseAutoGridCount(autoGridMaxRows), [autoGridMaxRows]);
     const imageSrc = mapImageSrc(mapConfig, apiBase, imageVersion);
+    const roadCursorNode = useMemo(
+        () => mapConfig.roadGraph.nodes.find((node) => node.id === roadCursorID) || null,
+        [mapConfig.roadGraph.nodes, roadCursorID],
+    );
 
     const loadPlans = useCallback(
         async (mapID: string, preferredPlanID?: string) => {
@@ -425,6 +430,7 @@ export const RoutePlannerPage: FC = () => {
             setStep(data.currentStep || (data.imageUrl ? "calibration" : "upload"));
             setImageVersion(Date.now());
             setSelectedMarkers(new Set());
+            setRoadCursor(null);
             resetAutoGridDraft();
             setMessage(`已打开 ${data.name || data.mapID}`);
             await loadPlans(data.mapID);
@@ -571,6 +577,11 @@ export const RoutePlannerPage: FC = () => {
         return saved;
     }
 
+    function setRoadCursor(id: string | null): void {
+        roadCursorRef.current = id;
+        setRoadCursorID(id);
+    }
+
     function createSnapshot(): EditSnapshot {
         return {
             autoGridAnchors: cloneJson(autoGridAnchors),
@@ -606,7 +617,7 @@ export const RoutePlannerPage: FC = () => {
         setZoneID(snapshot.zoneID);
         setStep(snapshot.step);
         setMode(snapshot.mode);
-        roadCursorRef.current = snapshot.roadCursorID;
+        setRoadCursor(snapshot.roadCursorID);
         setSelectedMarkers(new Set());
     }
 
@@ -687,6 +698,7 @@ export const RoutePlannerPage: FC = () => {
         setMapConfig(data);
         setStep("upload");
         resetAutoGridDraft();
+        setRoadCursor(null);
         setPlans([]);
         setCurrentPlan(null);
         setMaps((items) => [data, ...items.filter((item) => item.mapID !== data.mapID)]);
@@ -716,6 +728,7 @@ export const RoutePlannerPage: FC = () => {
         setPlans([]);
         setCurrentPlan(null);
         setPlanNameDraft("");
+        setRoadCursor(null);
         setSelectedMarkers(new Set());
         setHistory([]);
         setFutureHistory([]);
@@ -724,6 +737,7 @@ export const RoutePlannerPage: FC = () => {
         } else {
             skipMapSaveRef.current = true;
             setMapConfig(DEFAULT_MAP);
+            setRoadCursor(null);
             setStep("upload");
         }
         setMessage("平面图已删除");
@@ -817,7 +831,7 @@ export const RoutePlannerPage: FC = () => {
             clearGeneratedPath();
         } else if (step === "roads") {
             setMapConfig((current) => ({ ...current, roadGraph: { edges: [], nodes: [] } }));
-            roadCursorRef.current = null;
+            setRoadCursor(null);
             clearGeneratedPath();
         }
         setSelectedMarkers(new Set());
@@ -847,6 +861,7 @@ export const RoutePlannerPage: FC = () => {
                 : plan,
         );
         setStep("upload");
+        setRoadCursor(null);
         setZoneDraft([]);
         setAutoGridAnchors({});
         setAutoGridPick(null);
@@ -970,6 +985,7 @@ export const RoutePlannerPage: FC = () => {
         setMapConfig({ ...next, currentStep: "calibration" });
         clearGeneratedPath();
         setStep("calibration");
+        setRoadCursor(null);
         resetAutoGridDraft();
         setImageVersion(Date.now());
         setMessage("平面图已上传，请进行两点标定");
@@ -989,7 +1005,7 @@ export const RoutePlannerPage: FC = () => {
 
     function setStepAndSave(value: WizardStep): void {
         if (value !== "roads") {
-            roadCursorRef.current = null;
+            setRoadCursor(null);
         }
         if (value !== "islands") {
             resetAutoGridDraft();
@@ -1237,6 +1253,7 @@ export const RoutePlannerPage: FC = () => {
                       zoom <
                   14
                 : false;
+        const previousID = roadCursorRef.current;
         const node: RoadNode =
             reuse && nearest
                 ? nearest
@@ -1245,20 +1262,19 @@ export const RoutePlannerPage: FC = () => {
                       x: roundMeter(point.x),
                       y: roundMeter(point.y),
                   };
-        const previousID = roadCursorRef.current;
+        const edgeExistsBefore = graph.edges.some(
+            (edge) =>
+                previousID &&
+                ((edge.from === previousID && edge.to === node.id) ||
+                    (edge.from === node.id && edge.to === previousID)),
+        );
         pushHistory();
-        roadCursorRef.current = node.id;
+        setRoadCursor(node.id);
         setMapConfig((current) => {
             const data = normalizeMap(current);
             const nodes = reuse ? data.roadGraph.nodes : [...data.roadGraph.nodes, node];
-            const edgeExists = data.roadGraph.edges.some(
-                (edge) =>
-                    previousID &&
-                    ((edge.from === previousID && edge.to === node.id) ||
-                        (edge.from === node.id && edge.to === previousID)),
-            );
             const edges =
-                previousID && previousID !== node.id && !edgeExists
+                previousID && previousID !== node.id && !edgeExistsBefore
                     ? [
                           ...data.roadGraph.edges,
                           {
@@ -1272,6 +1288,19 @@ export const RoutePlannerPage: FC = () => {
             return { ...data, roadGraph: { edges, nodes } };
         });
         clearGeneratedPath();
+        if (!previousID || previousID === node.id) {
+            setMessage(
+                reuse
+                    ? `已选择路口节点 ${node.id} 作为连接起点`
+                    : `已标注路口节点 ${node.id}，请继续点击下一个路口建立通路`,
+            );
+            return;
+        }
+        setMessage(
+            edgeExistsBefore
+                ? `节点 ${previousID} 与 ${node.id} 已存在通路，当前连接起点切换为 ${node.id}`
+                : `已连接 ${previousID} -> ${node.id}，可继续连接或重新选择起点`,
+        );
     }
 
     function handleMouseDown(event: MouseEvent<HTMLDivElement>): void {
@@ -1576,6 +1605,12 @@ export const RoutePlannerPage: FC = () => {
             setZoneDraft((items) => items.filter((_, index) => !draftIndexes.has(index)));
         }
         if (hasMapMarkers) {
+            const deletedNodeIds = new Set(
+                [...markers].filter((id) => id.startsWith("node:")).map((id) => id.slice(5)),
+            );
+            if (roadCursorRef.current && deletedNodeIds.has(roadCursorRef.current)) {
+                setRoadCursor(null);
+            }
             updateMap(
                 (current) => {
                     let calibration = current.calibration;
@@ -1605,9 +1640,6 @@ export const RoutePlannerPage: FC = () => {
                             .filter((id) => id.startsWith("edge:"))
                             .map((id) => id.slice(5)),
                     );
-                    if (roadCursorRef.current && nodeIds.has(roadCursorRef.current)) {
-                        roadCursorRef.current = null;
-                    }
                     return {
                         ...current,
                         calibration,
@@ -1861,7 +1893,7 @@ export const RoutePlannerPage: FC = () => {
                                     realToPixel(point, activeCalibration),
                                 );
                                 return (
-                                    <g key={zone.id}>
+                                    <g key={zone.id} opacity={step === "roads" ? 0.18 : 1}>
                                         <polygon
                                             fill="rgba(14, 165, 233, 0.08)"
                                             points={points
@@ -1875,7 +1907,7 @@ export const RoutePlannerPage: FC = () => {
                                             strokeDasharray="8 6"
                                             strokeWidth={2 / zoom}
                                         />
-                                        {points[0] && (
+                                        {points[0] && step !== "roads" && (
                                             <text
                                                 fill="#0f172a"
                                                 fontSize={18 / zoom}
@@ -1892,7 +1924,7 @@ export const RoutePlannerPage: FC = () => {
                                     </g>
                                 );
                             })}
-                            {zoneDraft.length > 0 && (
+                            {zoneDraft.length > 0 && step !== "roads" && (
                                 <g>
                                     <polyline
                                         fill="none"
@@ -1969,25 +2001,45 @@ export const RoutePlannerPage: FC = () => {
                             })}
                             {mapConfig.roadGraph.nodes.map((node) => {
                                 const point = realToPixel(node, activeCalibration);
+                                const isCurrentRoadCursor = roadCursorID === node.id;
                                 return (
-                                    <circle
-                                        key={node.id}
-                                        cx={point.px}
-                                        cy={point.py}
-                                        fill={
-                                            selectedMarkers.has(`node:${node.id}`)
-                                                ? "#facc15"
-                                                : "#e0f2fe"
-                                        }
-                                        r={5 / zoom}
-                                    />
+                                    <g key={node.id}>
+                                        <circle
+                                            cx={point.px}
+                                            cy={point.py}
+                                            fill={
+                                                isCurrentRoadCursor
+                                                    ? "#f97316"
+                                                    : selectedMarkers.has(`node:${node.id}`)
+                                                      ? "#facc15"
+                                                      : "#e0f2fe"
+                                            }
+                                            r={(isCurrentRoadCursor ? 8 : 5) / zoom}
+                                            stroke={isCurrentRoadCursor ? "#ffffff" : "#020617"}
+                                            strokeWidth={(isCurrentRoadCursor ? 3 : 1.5) / zoom}
+                                        />
+                                        {step === "roads" && isCurrentRoadCursor && (
+                                            <text
+                                                fill="#0f172a"
+                                                fontSize={11 / zoom}
+                                                fontWeight={800}
+                                                paintOrder="stroke"
+                                                stroke="#ffffff"
+                                                strokeWidth={3 / zoom}
+                                                x={point.px + 8 / zoom}
+                                                y={point.py - 7 / zoom}
+                                            >
+                                                起点
+                                            </text>
+                                        )}
+                                    </g>
                                 );
                             })}
                             {mapConfig.islands.map((island) => {
                                 const center = realToPixel(island.center, activeCalibration);
                                 const selected = selectedMarkers.has(`island:${island.id}`);
                                 return (
-                                    <g key={island.id}>
+                                    <g key={island.id} opacity={step === "roads" ? 0.22 : 1}>
                                         <circle
                                             cx={center.px}
                                             cy={center.py}
@@ -1996,22 +2048,25 @@ export const RoutePlannerPage: FC = () => {
                                             stroke="#020617"
                                             strokeWidth={2 / zoom}
                                         />
-                                        <text
-                                            fill="#0f172a"
-                                            fontSize={13 / zoom}
-                                            fontWeight={700}
-                                            paintOrder="stroke"
-                                            stroke="#ffffff"
-                                            strokeWidth={4 / zoom}
-                                            x={center.px + 9 / zoom}
-                                            y={center.py - 8 / zoom}
-                                        >
-                                            {island.id}
-                                        </text>
+                                        {step !== "roads" && (
+                                            <text
+                                                fill="#0f172a"
+                                                fontSize={13 / zoom}
+                                                fontWeight={700}
+                                                paintOrder="stroke"
+                                                stroke="#ffffff"
+                                                strokeWidth={4 / zoom}
+                                                x={center.px + 9 / zoom}
+                                                y={center.py - 8 / zoom}
+                                            >
+                                                {island.id}
+                                            </text>
+                                        )}
                                     </g>
                                 );
                             })}
-                            {mapConfig.calibration &&
+                            {step !== "roads" &&
+                                mapConfig.calibration &&
                                 (["p1", "p2"] as const).map((key, index) => {
                                     const point = mapConfig.calibration?.[key];
                                     return point ? (
@@ -2605,8 +2660,14 @@ export const RoutePlannerPage: FC = () => {
                         {step === "roads" && (
                             <div className="grid gap-3">
                                 <p className="text-xs text-slate-500">
-                                    沿通道中心线按顺序点击节点，系统会自动连线；点击“断开连线”后可从新的通道段开始。右键节点或边可删除。
+                                    先标注或点击已有路口节点作为连接起点，再点击另一个路口节点建立通路。需要从同一路口连多个方向时，点击“选择新的连接起点”，再点该路口继续分叉。
                                 </p>
+                                <div className="rounded-md border border-white/10 bg-slate-900 p-3 text-xs text-slate-400">
+                                    当前连接起点：
+                                    {roadCursorNode
+                                        ? `${roadCursorNode.id} (${roadCursorNode.x.toFixed(2)}, ${roadCursorNode.y.toFixed(2)})`
+                                        : "未选择，请点击一个路口节点"}
+                                </div>
                                 {mode !== "road" && (
                                     <button
                                         className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
@@ -2642,9 +2703,12 @@ export const RoutePlannerPage: FC = () => {
                                 <button
                                     className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
                                     type="button"
-                                    onClick={() => (roadCursorRef.current = null)}
+                                    onClick={() => {
+                                        setRoadCursor(null);
+                                        setMessage("请选择新的路口节点作为连接起点");
+                                    }}
                                 >
-                                    断开连线
+                                    选择新的连接起点
                                 </button>
                                 <button
                                     className="rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
