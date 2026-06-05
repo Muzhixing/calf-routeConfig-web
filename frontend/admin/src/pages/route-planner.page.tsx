@@ -39,7 +39,6 @@ import {
     DEFAULT_MAP,
     distance,
     EMPTY_CALIBRATION,
-    findNearestNode,
     hasCalibration,
     idNumber,
     mapImageSrc,
@@ -47,6 +46,7 @@ import {
     type PixelPoint,
     pixelToReal,
     type RealPoint,
+    type RoadEdge,
     realToPixel,
     type RoadNode,
     roundMeter,
@@ -119,6 +119,8 @@ type AutoGridAnchors = {
 
 const MAX_ZOOM = 3;
 const MIN_ZOOM = 0.25;
+const ROAD_EDGE_SNAP_SCREEN_PX = 12;
+const ROAD_NODE_SNAP_SCREEN_PX = 18;
 const ZOOM_STEP = 1.15;
 
 const MODE_OPTIONS: { icon: typeof MoveIcon; label: string; value: Mode }[] = [
@@ -180,6 +182,32 @@ function lineDistance(point: RealPoint, a: RealPoint, b: RealPoint): number {
         ),
     );
     return distance(point, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+}
+
+function projectPixelToSegment(
+    point: PixelPoint,
+    from: PixelPoint,
+    to: PixelPoint,
+): PixelPoint & { distancePx: number; t: number } {
+    const dx = to.px - from.px;
+    const dy = to.py - from.py;
+    const lengthSq = dx * dx + dy * dy;
+    const t =
+        lengthSq <= 0.000001
+            ? 0
+            : Math.max(
+                  0,
+                  Math.min(1, ((point.px - from.px) * dx + (point.py - from.py) * dy) / lengthSq),
+              );
+    const projected = {
+        px: from.px + dx * t,
+        py: from.py + dy * t,
+    };
+    return {
+        ...projected,
+        distancePx: Math.hypot(projected.px - point.px, projected.py - point.py),
+        t,
+    };
 }
 
 function cloneJson<T>(value: T): T {
@@ -1242,64 +1270,144 @@ export const RoutePlannerPage: FC = () => {
         setMessage(`已自动生成 ${created.length} 个犊牛岛投喂点，可继续补充或进入通道路线`);
     }
 
+    function findRoadEdgeSnap(point: RealPoint): {
+        edge: RoadEdge;
+        point: RealPoint;
+        screenDistance: number;
+    } | null {
+        const graph = mapConfig.roadGraph;
+        const nodes = nodeMap(graph);
+        const pointPixel = realToPixel(point, activeCalibration);
+        let best: { edge: RoadEdge; point: RealPoint; screenDistance: number } | null = null;
+        graph.edges.forEach((edge) => {
+            const from = nodes.get(edge.from);
+            const to = nodes.get(edge.to);
+            if (!from || !to) {
+                return;
+            }
+            const fromPixel = realToPixel(from, activeCalibration);
+            const toPixel = realToPixel(to, activeCalibration);
+            const projected = projectPixelToSegment(pointPixel, fromPixel, toPixel);
+            if (projected.t <= 0.02 || projected.t >= 0.98) {
+                return;
+            }
+            const screenDistance = projected.distancePx * zoom;
+            if (screenDistance > ROAD_EDGE_SNAP_SCREEN_PX) {
+                return;
+            }
+            const projectedReal = interpolatePoint(from, to, projected.t);
+            if (!best || screenDistance < best.screenDistance) {
+                best = { edge, point: projectedReal, screenDistance };
+            }
+        });
+        return best;
+    }
+
     function addRoadPoint(point: RealPoint): void {
         const graph = mapConfig.roadGraph;
-        const nearest = findNearestNode(graph, point);
-        const nearestPixel = nearest ? realToPixel(nearest, activeCalibration) : null;
         const pointPixel = realToPixel(point, activeCalibration);
-        const reuse =
-            nearest && nearestPixel
-                ? Math.hypot(nearestPixel.px - pointPixel.px, nearestPixel.py - pointPixel.py) *
-                      zoom <
-                  14
-                : false;
+        const nearest = graph.nodes.reduce<{
+            node: RoadNode;
+            screenDistance: number;
+        } | null>((best, node) => {
+            const nodePixel = realToPixel(node, activeCalibration);
+            const screenDistance =
+                Math.hypot(nodePixel.px - pointPixel.px, nodePixel.py - pointPixel.py) * zoom;
+            return !best || screenDistance < best.screenDistance ? { node, screenDistance } : best;
+        }, null);
+        const reuse = Boolean(nearest && nearest.screenDistance <= ROAD_NODE_SNAP_SCREEN_PX);
+        const edgeSnap = reuse ? null : findRoadEdgeSnap(point);
         const previousID = roadCursorRef.current;
+        const timestamp = Date.now();
         const node: RoadNode =
             reuse && nearest
-                ? nearest
+                ? nearest.node
                 : {
-                      id: `n${Date.now()}`,
-                      x: roundMeter(point.x),
-                      y: roundMeter(point.y),
+                      id: `n${timestamp}`,
+                      x: roundMeter(edgeSnap?.point.x ?? point.x),
+                      y: roundMeter(edgeSnap?.point.y ?? point.y),
                   };
-        const edgeExistsBefore = graph.edges.some(
-            (edge) =>
+        const edgeExistsBefore =
+            graph.edges.some(
+                (edge) =>
+                    previousID &&
+                    ((edge.from === previousID && edge.to === node.id) ||
+                        (edge.from === node.id && edge.to === previousID)),
+            ) ||
+            Boolean(
                 previousID &&
-                ((edge.from === previousID && edge.to === node.id) ||
-                    (edge.from === node.id && edge.to === previousID)),
-        );
+                edgeSnap &&
+                [edgeSnap.edge.from, edgeSnap.edge.to].includes(previousID),
+            );
         pushHistory();
         setRoadCursor(node.id);
         setMapConfig((current) => {
             const data = normalizeMap(current);
             const nodes = reuse ? data.roadGraph.nodes : [...data.roadGraph.nodes, node];
-            const edges =
-                previousID && previousID !== node.id && !edgeExistsBefore
+            const splitEdge = edgeSnap
+                ? data.roadGraph.edges.find((edge) => edge.id === edgeSnap.edge.id)
+                : null;
+            const splitEdges =
+                splitEdge && !reuse
                     ? [
-                          ...data.roadGraph.edges,
+                          {
+                              from: splitEdge.from,
+                              id: `e${timestamp}a`,
+                              to: node.id,
+                              type: splitEdge.type,
+                          },
+                          {
+                              from: node.id,
+                              id: `e${timestamp}b`,
+                              to: splitEdge.to,
+                              type: splitEdge.type,
+                          },
+                      ]
+                    : [];
+            const baseEdges =
+                splitEdge && !reuse
+                    ? [
+                          ...data.roadGraph.edges.filter((edge) => edge.id !== splitEdge.id),
+                          ...splitEdges,
+                      ]
+                    : data.roadGraph.edges;
+            const edgeExistsAfterSplit = baseEdges.some(
+                (edge) =>
+                    previousID &&
+                    ((edge.from === previousID && edge.to === node.id) ||
+                        (edge.from === node.id && edge.to === previousID)),
+            );
+            const edges =
+                previousID && previousID !== node.id && !edgeExistsBefore && !edgeExistsAfterSplit
+                    ? [
+                          ...baseEdges,
                           {
                               from: previousID,
-                              id: `e${Date.now()}`,
+                              id: `e${timestamp}c`,
                               to: node.id,
                               type: roadEdgeType,
                           },
                       ]
-                    : data.roadGraph.edges;
+                    : baseEdges;
             return { ...data, roadGraph: { edges, nodes } };
         });
         clearGeneratedPath();
         if (!previousID || previousID === node.id) {
             setMessage(
                 reuse
-                    ? `已选择路口节点 ${node.id} 作为连接起点`
-                    : `已标注路口节点 ${node.id}，请继续点击下一个路口建立通路`,
+                    ? `已吸附并合并到已有路口节点 ${node.id}，作为连接起点`
+                    : edgeSnap
+                      ? `已吸附到已有通路并新增路口节点 ${node.id}，原通路已自动拆分`
+                      : `已标注路口节点 ${node.id}，请继续点击下一个路口建立通路`,
             );
             return;
         }
         setMessage(
             edgeExistsBefore
                 ? `节点 ${previousID} 与 ${node.id} 已存在通路，当前连接起点切换为 ${node.id}`
-                : `已连接 ${previousID} -> ${node.id}，可继续连接或重新选择起点`,
+                : edgeSnap
+                  ? `已吸附到已有通路并连接 ${previousID} -> ${node.id}，原通路已自动拆分`
+                  : `已连接 ${previousID} -> ${node.id}，可继续连接或重新选择起点`,
         );
     }
 
