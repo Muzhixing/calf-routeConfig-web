@@ -7,6 +7,7 @@ type SignalMessage = {
     type?: string;
     sdp?: string;
     candidate?: string;
+    deviceID?: string;
     sdpMid?: string | null;
     sdpMLineIndex?: number | null;
     to?: string;
@@ -146,6 +147,7 @@ export const LiveViewerPage: FC = () => {
             setConnected(true);
             setStatus("等待板卡视频");
             log("信令已连接");
+            send({ deviceID, type: "watch" });
         };
         ws.onmessage = (event) => {
             void handleSignal(JSON.parse(String(event.data)) as SignalMessage).catch((error) =>
